@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' https: data:; style-src 'self' glasswing: 'unsafe-inline'; script-src 'self'; connect-src 'self'"
+    />
+    <meta name="color-scheme" content="dark" />
+    <title>Passwords</title>
+    <link rel="stylesheet" href="glasswing://extensions/extensions.css" />
+    <style>
+      .section { margin: 32px 0 12px; font-size: 13px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+      .card img { width: 32px; height: 32px; border-radius: 8px; padding: 6px; background: rgba(255, 255, 255, 0.08); }
+      .card { grid-template-columns: 32px 1fr auto; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Passwords</h1>
+          <p class="sub">Saved when you sign in and filled in automatically next time. Encrypted with your Windows account.</p>
+        </div>
+      </header>
+      <div id="saved" class="list"></div>
+      <h2 id="never-title" class="section" hidden>Never saved for</h2>
+      <div id="never" class="list"></div>
+    </main>
+    <script src="passwords.js"></script>
+  </body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "name": "glasswing",
+  "productName": "Glasswing",
+  "version": "0.1.0",
+  "description": "A minimalist, dark, see-through browser with Safari-style tabs, DuckDuckGo search and Chrome extension support.",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --enable-logging"
+  },
+  "keywords": [
+    "browser",
+    "electron"
+  ],
+  "author": "",
+  "license": "MIT",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "electron-chrome-extensions": "^4.10.0",
+    "electron-chrome-web-store": "^0.13.0"
+  },
+  "devDependencies": {
+    "electron": "^45.2.1"
+  }
+}

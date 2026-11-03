@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'"
+    />
+    <meta name="color-scheme" content="dark" />
+    <title>History</title>
+    <link rel="stylesheet" href="history.css" />
+  </head>
+  <body>
+    <main>
+      <header class="top">
+        <h1>History</h1>
+        <div class="search">
+          <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.25" /><path d="M10.2 10.2L13.5 13.5" /></svg>
+          <input id="search" type="text" placeholder="Search history" spellcheck="false" autocomplete="off" />
+        </div>
+        <button id="open-clear" class="button danger">Clear Browsing Data…</button>
+      </header>
+
+      <section class="settings">
+        <div class="setting">
+          <div>
+            <div class="setting-title">Remember history</div>
+            <div class="setting-sub">Save the pages you visit so they show up here and in the address bar.</div>
+          </div>
+          <button id="set-enabled" class="switch" role="switch"></button>
+        </div>
+        <div class="setting">
+          <div>
+            <div class="setting-title">Remove history items</div>
+            <div class="setting-sub">Automatically delete pages you haven’t visited in a while.</div>
+          </div>
+          <div id="set-retention" class="segmented">
+            <button data-value="1">After a day</button>
+            <button data-value="7">Week</button>
+            <button data-value="30">Month</button>
+            <button data-value="365">Year</button>
+            <button data-value="0">Never</button>
+          </div>
+        </div>
+        <div class="setting">
+          <div>
+            <div class="setting-title">Clear history when quitting</div>
+            <div class="setting-sub">Start every session with a clean history.</div>
+          </div>
+          <button id="set-clear-exit" class="switch" role="switch"></button>
+        </div>
+      </section>
+
+      <div id="list"></div>
+      <div id="more" class="more" hidden><button class="button secondary">Show More</button></div>
+    </main>
+
+    <dialog id="clear-dialog">
+      <h2>Clear browsing data</h2>
+      <div class="label">Time range</div>
+      <div id="clear-range" class="segmented wide">
+        <button data-value="hour">Last hour</button>
+        <button data-value="day">24 hours</button>
+        <button data-value="week">7 days</button>
+        <button data-value="month">4 weeks</button>
+        <button data-value="all">All time</button>
+      </div>
+      <label class="check"><input type="checkbox" name="history" checked /><span><b>Browsing history</b><small>Pages you visited and address bar suggestions</small></span></label>
+      <label class="check"><input type="checkbox" name="cookies" checked /><span><b>Cookies and site data</b><small id="cookies-note">Signs you out of most sites</small></span></label>
+      <label class="check"><input type="checkbox" name="cache" checked /><span><b>Cached images and files</b><small>Always clears the whole cache</small></span></label>
+      <label class="check"><input type="checkbox" name="downloads" /><span><b>Download history</b><small>The list only, not the files</small></span></label>
+      <label class="check"><input type="checkbox" name="passwords" /><span><b>Saved passwords</b><small>Passwords used in this time range</small></span></label>
+      <div class="actions">
+        <button id="clear-cancel" class="button secondary">Cancel</button>
+        <button id="clear-confirm" class="button danger-solid">Clear Data</button>
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="history.js"></script>
+  </body>
+</html>

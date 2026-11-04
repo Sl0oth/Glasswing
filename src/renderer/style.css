@@ -145,11 +145,27 @@ body.chrome-hidden:not(.revealed).page-loading #top-progress {
   align-items: center;
   gap: 6px;
   padding: 0 8px;
+  position: relative;
   -webkit-app-region: drag; /* the gaps between elements still move the window */
+}
+
+/* The strip under the elements is over the page when auto-hide is on, so it belongs to the page. */
+body.chrome-hidden #toolbar::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: calc((var(--toolbar-height) - 34px) / 2);
+  -webkit-app-region: no-drag;
 }
 
 body.expanded #toolbar {
   -webkit-app-region: no-drag; /* with a dropdown open, a click in a gap just closes it */
+}
+
+/* A drag area still works when its view is shrunk to nothing. With the toolbar off screen, it would
+   sit invisibly over the top of the page, and clicks on the page's buttons would move the window. */
+body.toolbar-away #toolbar {
+  -webkit-app-region: no-drag;
 }
 
 #left-pill,

@@ -46,6 +46,9 @@ const commands = {
   expand: (shell, expanded) => shell.setExpanded(expanded),
   hold: (shell, hold) => shell.setHold(hold),
   'floating-rects': (shell, rects) => shell.setFloatingRects(rects),
+  'page-mouse': (shell, type, x, y, button, clickCount) => {
+    if (['mouseDown', 'mouseMove', 'mouseUp'].includes(type)) shell.forwardMouse(type, num(x), num(y), num(button), num(clickCount))
+  },
 
   'protection-set': (shell, partial) => shell.setProtection(partial ?? {}),
   'protection-toggle-site': (shell) => shell.toggleProtectionForSite(),

@@ -108,6 +108,7 @@ class BrowserShell {
     this.concealing = false // sliding away; the view stays tall until the animation ends
     this.concealTimer = null
     this.uiExpanded = false
+    this.pagePressTab = null // the tab getting a press passed on from the toolbar view
     this.uiHold = false // the address bar is being edited
     this.peekUntil = 0
     this.pointerLeftAt = null
@@ -244,7 +245,11 @@ class BrowserShell {
       BrowserShell.recent = [this, ...BrowserShell.recent.filter((s) => s !== this)]
       this.scheduleState()
     })
-    win.on('blur', () => this.scheduleState())
+    win.on('blur', () => {
+      // Switching windows mid-press: the release may never arrive, so don't leave the page waiting.
+      if (this.pagePressTab) this.forwardMouse('mouseUp', this.pagePressAt.x, this.pagePressAt.y, 0, 1)
+      this.scheduleState()
+    })
     // Mouse back/forward buttons on Windows.
     win.on('app-command', (_e, command) => {
       const tab = this.activeTab()
@@ -705,7 +710,8 @@ class BrowserShell {
 
     let uiHeight = chrome
     if (hidden) {
-      if (this.revealed || this.concealing) uiHeight = chrome + SHADOW_ROOM
+      // A press passed on to the page has to stay here to hear about its release.
+      if (this.revealed || this.concealing || this.pagePressTab) uiHeight = chrome + SHADOW_ROOM
       else uiHeight = tab?.loading ? LOADING_STRIP : 0
     }
     if (this.uiExpanded) uiHeight = height
@@ -780,6 +786,33 @@ class BrowserShell {
     this.floatingRects = Array.isArray(rects) ? rects : []
   }
 
+  /** Passes on a press in an empty part of the toolbar view to the page underneath it. */
+  forwardMouse(type, x, y, button, clickCount) {
+    if (![x, y, button, clickCount].every(Number.isFinite)) return
+    const contains = ({ x: left, y: top, width, height }) => x >= left && x < left + width && y >= top && y < top + height
+    if (type === 'mouseDown') this.pagePressTab = this.visibleTabs().find((tab) => contains(tab.view.getBounds())) ?? null
+    this.pagePressAt = { x, y }
+
+    const tab = this.pagePressTab
+    if (tab && !tab.webContents.isDestroyed()) {
+      const bounds = tab.view.getBounds()
+      const event = { x: x - bounds.x, y: y - bounds.y, button: ['left', 'middle', 'right'][button] ?? 'left', clickCount }
+      if (type === 'mouseDown') {
+        tab.webContents.focus()
+        tab.webContents.sendInputEvent({ ...event, type: 'mouseMove' })
+      }
+      // Without this, a page reads a move during a press as a move with nothing held: no text selecting.
+      const held = type === 'mouseMove' ? { modifiers: [`${event.button}ButtonDown`] } : {}
+      tab.webContents.sendInputEvent({ ...event, ...held, type })
+    }
+
+    if (type === 'mouseUp') {
+      this.pagePressTab = null
+      this.setRevealed(false) // the person has gone back to the page
+      this.layout()
+    }
+  }
+
   setRevealed(revealed) {
     const next = Boolean(revealed)
     if (next === this.revealed) return
@@ -828,7 +861,7 @@ class BrowserShell {
   /** Auto-hide: brings the toolbar down at the top edge, and sends it away once it's not in use. */
   watchPointer() {
     if (this.closed || this.win.isDestroyed() || !this.isChromeHidden() || this.htmlFullscreen) return
-    if (!this.win.isVisible() || this.win.isMinimized()) return
+    if (!this.win.isVisible() || this.win.isMinimized() || this.pagePressTab) return
 
     if (this.mustShowChrome()) {
       this.pointerLeftAt = null
@@ -880,6 +913,7 @@ class BrowserShell {
       this.win.setFullScreen(false)
     }
     this.layout()
+    this.scheduleState()
   }
 
   focusAddressBar() {
@@ -931,6 +965,7 @@ class BrowserShell {
       activeId: this.activeId,
       chromeHidden: this.isChromeHidden(),
       revealed: this.revealed,
+      toolbarAway: this.htmlFullscreen || (this.isChromeHidden() && !this.revealed),
       focusMode: this.appearance.autoHide,
       fullscreen: this.win.isFullScreen(),
       maximized: this.win.isMaximized(),

@@ -17,6 +17,7 @@ const http = require('node:http')
 
 const REPO = path.join(__dirname, '..')
 const shotsDir = process.argv.find((a) => a.startsWith('--shots='))?.slice(8)
+// Shows real windows. Keep the real mouse pointer off them: its events mix with the simulated tab drags.
 const testWindowStates = process.argv.includes('--window-states')
 process.env.GLASSWING_SKIP_BLOCKLIST_DOWNLOAD = '1' // this test brings its own filters
 
@@ -859,9 +860,55 @@ async function run() {
   favorites.remove('https://live.test/')
   shell.closeTab(internal.id)
 
-  console.log('\nFull-screen video')
+  console.log('\nClicking the top of a page')
+  const toolbarDrags = () => ui(shell, `getComputedStyle(document.querySelector('#toolbar')).webkitAppRegion === 'drag'`)
   shell.selectTab(tab.id)
   await until(() => !shell.revealed && uiHeight() === 0)
+  check('with the toolbar hidden, the top of the page does not move the window', await until(async () => !(await toolbarDrags())))
+  moveCursor(200, 0)
+  await until(() => shell.revealed)
+  check('with it showing, its gaps do', await until(toolbarDrags))
+  moveCursor(640, 500)
+  await until(() => !shell.revealed && uiHeight() === 0)
+  check('and hidden again, they stop', await until(async () => !(await toolbarDrags())))
+
+  // Empty parts of the toolbar view: the page underneath gets the press.
+  const passedOn = []
+  const realSend = tab.webContents.sendInputEvent.bind(tab.webContents)
+  tab.webContents.sendInputEvent = (event) => { if (event.type !== 'mouseMove' || event.modifiers) passedOn.push(event.type) }
+  const onBody = (type, buttons) => ui(shell, `document.body.dispatchEvent(new MouseEvent('${type}', { bubbles: true, button: 0, buttons: ${buttons}, clientX: 900, clientY: 90, detail: 1 }))`)
+  const pressBody = async () => {
+    await onBody('mousedown', 1)
+    await onBody('mousemove', 1)
+    await onBody('mouseup', 0)
+    await wait(100)
+    return passedOn.splice(0)
+  }
+  moveCursor(200, 0)
+  await until(() => shell.revealed)
+  await until(() => ui(shell, `document.body.classList.contains('revealed')`))
+  equal('a press in an empty part reaches the page', await pressBody(), ['mouseDown', 'mouseMove', 'mouseUp'])
+  moveCursor(640, 500)
+  check('and sends the toolbar away', await until(() => !shell.revealed && uiHeight() === 0))
+  moveCursor(200, 0)
+  await until(() => shell.revealed)
+  await ui(shell, `document.querySelector('#fav-pill').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1, clientX: 300, clientY: 60 }))`)
+  await ui(shell, `window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: 300, clientY: 60 }))`)
+  await wait(100)
+  equal('a press on the toolbar\'s own pieces does not', passedOn.splice(0), [])
+  await ui(shell, `expanded = true`)
+  equal('nor does one with a dropdown open', await pressBody(), [])
+  await ui(shell, `expanded = false`)
+  moveCursor(640, 500)
+  await until(() => !shell.revealed && uiHeight() === 0)
+  appearance.update({ autoHide: false })
+  await until(() => ui(shell, `!document.body.classList.contains('chrome-hidden')`))
+  equal('nor one with auto-hide off, where no page is underneath', await pressBody(), [])
+  appearance.update({ autoHide: true })
+  await until(() => !shell.revealed && uiHeight() === 0)
+  tab.webContents.sendInputEvent = realSend
+
+  console.log('\nFull-screen video')
   shell.htmlFullscreen = true
   shell.layout()
   equal('toolbar is fully out of the way', uiHeight(), 0)
@@ -885,6 +932,15 @@ async function run() {
   const pinned = tab.view.getBounds()
   check('auto-hide off: page sits below the elements', pinned.y === 48 + 36, JSON.stringify(pinned))
   equal('auto-hide off: view is exactly the elements', uiHeight(), 48 + 36)
+  check('auto-hide off: the gaps move the window', await until(toolbarDrags))
+  shell.htmlFullscreen = true
+  shell.layout()
+  shell.scheduleState()
+  check('auto-hide off: nothing moves the window over a full-screen video', await until(async () => !(await toolbarDrags())))
+  shell.htmlFullscreen = false
+  shell.layout()
+  shell.scheduleState()
+  check('auto-hide off: and the gaps work again afterwards', await until(toolbarDrags))
   await shot(shell, '10-pinned')
   appearance.update({ autoHide: true })
   check('auto-hide back on: page is edge to edge', await until(() => tab.view.getBounds().y === 0))
@@ -918,7 +974,8 @@ async function run() {
 
   console.log('\nSigning in with Google')
   {
-    // A stand-in for Google, so this needs no network. Secure pages are the ones that send brand signals.
+    // A stand-in for Google, so this needs no network, and can't say whether the real Google accepts it.
+    // Secure pages are the ones that send brand signals.
     const signInTab = shell.createTab({ url: `${base}/before-sign-in` })
     const wc = signInTab.webContents
     await until(() => wc.getURL().endsWith('/before-sign-in') && !wc.isLoading())
@@ -945,38 +1002,41 @@ async function run() {
       await wait(300) // long enough for an error page drawn over the real one to show up
       return ok
     }
-    const seen = () => wc.executeJavaScript(`({ title: document.title, firefox: navigator.userAgent.includes('Firefox/'), appVersion: navigator.appVersion.includes('Firefox/'), brands: 'userAgentData' in navigator, chrome: 'chrome' in window })`)
-    const asFirefox = { title: 'Fake sign-in', firefox: true, appVersion: true, brands: false, chrome: false }
+    const seen = () => wc.executeJavaScript(`({ title: document.title, real: navigator.userAgent.includes('Electron/'), appVersion: navigator.appVersion.includes('Electron/'), brands: 'userAgentData' in navigator, chrome: 'chrome' in window })`)
+    const asItself = { title: 'Fake sign-in', real: true, appVersion: true, brands: true, chrome: true }
 
     check('going to sign-in arrives', await arrive(signIn, () => signInTab.navigate(signIn)))
     equal('with no failed load', failed, [])
-    equal('and the page isn\'t covered, and sees Firefox', await seen(), asFirefox)
+    equal('and the page isn\'t covered, and sees the real browser', await seen(), asItself)
     const google = require(path.join(REPO, 'src/main/google-signin.js'))
-    const headers = (url, resourceType) => (google.presentsAsFirefox({ url, resourceType, webContents: wc }) ? 'firefox' : 'chrome')
-    equal('Google gets Firefox for the page', headers(signIn, 'mainFrame'), 'firefox')
-    equal('and for what the page loads', headers('https://ssl.gstatic.com/sign-in.js', 'script'), 'firefox')
-    equal('with no brand signals', google.firefoxHeaders({ 'user-agent': 'Chrome', 'Sec-CH-UA': 'a', 'sec-ch-ua-mobile': '?0', Accept: '*/*' }), { 'User-Agent': google.FIREFOX_UA, Accept: '*/*' })
+    const headers = (url, resourceType) => (google.usesSignInIdentity({ url, resourceType, webContents: wc }) ? 'real' : 'chrome')
+    equal('Google sign-in gets the real browser for the page', headers(signIn, 'mainFrame'), 'real')
+    equal('and for what the page loads', headers('https://ssl.gstatic.com/sign-in.js', 'script'), 'real')
+    equal('with Chromium\'s own brand signals left alone', google.signInHeaders({ 'user-agent': 'Chrome', 'Sec-CH-UA': 'a', Accept: '*/*' }), { 'User-Agent': google.signInUserAgent(), 'Sec-CH-UA': 'a', Accept: '*/*' })
+    check('naming the engine, not disguised as another browser', /Chrome\/\d+\.\d+\.\d+\.\d+ Electron\/\d/.test(google.signInUserAgent()) && !google.signInUserAgent().includes('Firefox/'), google.signInUserAgent())
+    equal('the page reads exactly what its requests say', await wc.executeJavaScript('navigator.userAgent'), google.signInUserAgent())
+    check('the sign-in script can\'t freeze a page waiting for an answer', !fs.readFileSync(path.join(REPO, 'src/preload/google-signin.js'), 'utf8').includes('sendSync'))
 
     wc.reload()
     await wait(100)
     await until(() => !wc.isLoading())
     await wait(300)
-    equal('reloading it stays fine', [failed, await seen()], [[], asFirefox])
+    equal('reloading it stays fine', [failed, await seen()], [[], asItself])
 
     await arrive(`${base}/after-sign-in`, () => signInTab.navigate('https://accounts.google.com/out'))
     equal('being sent back to a site works', failed, [])
-    check('and that site gets Chrome again', !(await wc.executeJavaScript('navigator.userAgent')).includes('Firefox/'))
+    check('and that site gets Chrome again', !(await wc.executeJavaScript('navigator.userAgent')).includes('Electron/'))
     check('going back to sign-in works', await arrive(signIn, () => wc.navigationHistory.goBack()))
-    equal('with no failed load', [failed, await seen()], [[], asFirefox])
+    equal('with no failed load', [failed, await seen()], [[], asItself])
 
     await arrive(`${base}/before-sign-in`, () => signInTab.navigate(`${base}/before-sign-in`))
     check('a site that redirects to sign-in gets there', await arrive(signIn, () => signInTab.navigate('https://example.test/to-sign-in')), wc.getURL())
-    equal('with no failed load', [failed, await seen()], [[], asFirefox])
+    equal('with no failed load', [failed, await seen()], [[], asItself])
 
     const other = 'https://example.test/embed'
     await arrive(other, () => signInTab.navigate(other))
     equal('other sites get Chrome', headers(other, 'mainFrame'), 'chrome')
-    check('and see Chrome', !(await wc.executeJavaScript('navigator.userAgent')).includes('Firefox/') && (await wc.executeJavaScript(`'chrome' in window`)))
+    check('and see Chrome', !(await wc.executeJavaScript('navigator.userAgent')).includes('Electron/') && (await wc.executeJavaScript(`'chrome' in window`)))
     equal('Google embedded in another site stays Chrome', headers('https://accounts.google.com/frame', 'subFrame'), 'chrome')
 
     wc.off('did-fail-load', onFail)

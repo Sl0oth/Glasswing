@@ -373,6 +373,7 @@ function render() {
   body.toggle('single-tab', state.tabs.length <= 1)
   body.toggle('chrome-hidden', Boolean(state.chromeHidden))
   body.toggle('revealed', Boolean(state.revealed))
+  body.toggle('toolbar-away', Boolean(state.toolbarAway))
   body.toggle('find-open', Boolean(state.findOpen))
   body.toggle('fullscreen', Boolean(state.fullscreen))
   body.toggle('blurred', state.focused === false)
@@ -767,6 +768,37 @@ $('#scrim').addEventListener('mousedown', (e) => {
   api.send('focus-page')
   hideSuggestions()
   syncExpanded()
+})
+
+// ── Clicks on the empty parts of the view ────────────────────────────────
+
+// With auto-hide on, this view is a rectangle over the top of the page. Where nothing is drawn in it,
+// a click belongs to the page underneath.
+let pagePress = null
+
+window.addEventListener('mousedown', (e) => {
+  const empty = e.target === document.body || e.target === document.documentElement
+  if (!empty || !state.chromeHidden || expanded) return
+  e.preventDefault()
+  pagePress = { button: e.button }
+  api.send('page-mouse', 'mouseDown', e.clientX, e.clientY, e.button, e.detail)
+})
+
+function endPagePress(e) {
+  const { button } = pagePress
+  pagePress = null
+  api.send('page-mouse', 'mouseUp', e.clientX, e.clientY, button, e.detail || 1)
+}
+
+window.addEventListener('mousemove', (e) => {
+  if (!pagePress) return
+  // Nothing held any more: the release happened somewhere this view never heard about it.
+  if (e.buttons === 0) endPagePress(e)
+  else api.send('page-mouse', 'mouseMove', e.clientX, e.clientY, pagePress.button, 0)
+})
+
+window.addEventListener('mouseup', (e) => {
+  if (pagePress?.button === e.button) endPagePress(e)
 })
 
 // ── Toolbar buttons ──────────────────────────────────────────────────────

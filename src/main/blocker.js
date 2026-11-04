@@ -224,7 +224,8 @@ function decide(details) {
 
   // A new page starts its count over. Pages themselves are never blocked.
   if (resourceType === 'mainFrame') {
-    counts.delete(webContents.id)
+    const entry = counts.get(webContents.id)
+    if (entry) Object.assign(entry, { ads: 0, trackers: 0 })
     changed()
     return {}
   }

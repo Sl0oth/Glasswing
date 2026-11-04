@@ -669,6 +669,9 @@ async function run() {
   check('the page\'s leftover ad box is hidden', await until(() => tab.webContents.executeJavaScript(`getComputedStyle(document.getElementById('box')).display === 'none'`), 2000))
   check('the shield shows the count', await until(() => ui(shell, `document.getElementById('shield-count').textContent === '2' && !document.getElementById('shield-count').hidden`), 1500))
   equal('a new page starts the count over', (await visit(), tab.state().blocked), { ads: 1, trackers: 1 })
+  const listeners = tab.webContents.listenerCount('destroyed')
+  for (let i = 0; i < 5; i++) await visit()
+  equal('page after page, nothing piles up', tab.webContents.listenerCount('destroyed'), listeners)
 
   blocker.set({ trackers: false })
   equal('trackers off: only ads are blocked', await visit(), { ad: false, tracker: true, normal: true })

@@ -13,6 +13,14 @@
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW GlasswingPageShow
 !define MUI_INSTFILESPAGE_PROGRESSBAR "smooth"
 
+; The update downloads aren't part of the install folder. An update runs this uninstaller too, and
+; it's still using them then, so they only go when the app does.
+!macro customUnInstall
+  ${ifNot} ${isUpdated}
+    RMDir /r "$LOCALAPPDATA\glasswing-updater"
+  ${endIf}
+!macroend
+
 !macro GlasswingHide parent id
   GetDlgItem $R9 ${parent} ${id}
   ShowWindow $R9 0

@@ -2,8 +2,9 @@
 // once. Everything is hidden and throwaway. The "other browsers" are fake profiles built here, in
 // the same files and formats the real ones use.
 //
-//   npx electron test/first-run.js              the two launches, in separate processes
-//   npx electron test/first-run.js --reopen     used by the above for the second launch
+//   npx electron test/first-run.js                  all of it, each launch in its own process
+//   npx electron test/first-run.js --reopen         used by the above for the second launch
+//   npx electron test/first-run.js --no-browsers    used by the above for a computer with none
 const { app, BrowserWindow, nativeImage } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
@@ -13,6 +14,7 @@ const { DatabaseSync } = require('node:sqlite')
 
 const REPO = path.join(__dirname, '..')
 const secondLaunch = process.argv.includes('--reopen')
+const noBrowsers = process.argv.includes('--no-browsers')
 const rootArg = process.argv.find((a) => a.startsWith('--root='))?.slice(7)
 const root = rootArg ?? fs.mkdtempSync(path.join(os.tmpdir(), 'glasswing-firstrun-'))
 const profile = path.join(root, 'profile')
@@ -319,6 +321,45 @@ async function firstLaunch() {
   app.releaseSingleInstanceLock()
 }
 
+// ── A computer with no other browsers ────────────────────────────────────
+
+async function noBrowsersLaunch() {
+  const { BrowserShell } = require(path.join(REPO, 'src/main/shell.js'))
+  const store = require(path.join(REPO, 'src/main/store.js'))
+  const favorites = require(path.join(REPO, 'src/main/favorites.js'))
+  console.log('\nNo other browsers on this computer')
+  check('the setup window still opens', await until(() => BrowserWindow.getAllWindows().length > 0, 15000))
+  const win = BrowserWindow.getAllWindows()[0]
+  await until(() => !win.webContents.isLoading())
+  const page = (code) => win.webContents.executeJavaScript(code, true)
+  win.webContents.on('console-message', (d) => {
+    if (d.level === 'error' || d.level === 'warning') errors.push(`setup page: ${d.message}`)
+  })
+  const step = () => page(`document.querySelector('section.current')?.dataset.step`)
+  const next = () => page(`document.getElementById('next').click()`)
+  await until(async () => (await step().catch(() => null)) === 'welcome')
+  await next()
+  equal('it reaches the import step', await step(), 'import')
+  check('and says none were found', await page(`document.querySelector('#browser-list .empty').textContent.includes('weren’t found')`))
+  equal('with no choices to make', await page(`document.querySelectorAll('#browser-list input').length`), 0)
+  check('the import options are hidden', await page(`document.getElementById('import-parts').hidden`))
+  equal('the button just continues', await page(`document.getElementById('next').textContent`), 'Continue')
+  check('with nothing to skip', await page(`document.getElementById('skip').hidden`))
+  for (const expected of ['look', 'browsing', 'updates']) {
+    await next()
+    await wait(60)
+    equal(`then ${expected}`, await step(), expected)
+  }
+  await next()
+  check('finishing opens the browser', await until(() => BrowserShell.all.size === 1, 8000))
+  equal('and setup is done', store.get('onboarded'), true)
+  check('the starter favorites are still there', favorites.list().length > 0)
+  store.flush()
+  await wait(100)
+  app.removeAllListeners('window-all-closed')
+  for (const w of BrowserWindow.getAllWindows()) w.destroy()
+}
+
 // ── Second launch ────────────────────────────────────────────────────────
 
 async function reopenLaunch() {
@@ -340,14 +381,20 @@ async function reopenLaunch() {
 
 app.whenReady().then(async () => {
   try {
-    if (secondLaunch) {
+    if (noBrowsers) {
+      await noBrowsersLaunch()
+    } else if (secondLaunch) {
       await reopenLaunch()
     } else {
       await firstLaunch()
       if (!shotsDir) {
-        const result = spawnSync(process.execPath, [__filename, '--reopen', `--root=${root}`], { encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined } })
-        console.log(result.stdout)
-        if (result.status !== 0) failures.push('the second launch')
+        const launch = (name, args) => {
+          const result = spawnSync(process.execPath, [__filename, ...args], { encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined } })
+          console.log(result.stdout)
+          if (result.status !== 0) failures.push(name)
+        }
+        launch('the second launch', ['--reopen', `--root=${root}`])
+        launch('no other browsers', ['--no-browsers', `--root=${path.join(root, 'empty-computer')}`])
       }
     }
   } catch (err) {
@@ -355,7 +402,7 @@ app.whenReady().then(async () => {
   }
   for (const e of errors) console.log(` ERROR ${e}`)
   console.log(`${checks - failures.length}/${checks} checks passed, ${errors.length} errors logged`)
-  if (!secondLaunch) {
+  if (!secondLaunch && !noBrowsers) {
     try {
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
     } catch {}

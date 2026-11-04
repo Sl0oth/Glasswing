@@ -916,6 +916,75 @@ async function run() {
     console.log('\n(maximize and full screen skipped; pass --window-states to include them)')
   }
 
+  console.log('\nSigning in with Google')
+  {
+    // A stand-in for Google, so this needs no network. Secure pages are the ones that send brand signals.
+    const signInTab = shell.createTab({ url: `${base}/before-sign-in` })
+    const wc = signInTab.webContents
+    await until(() => wc.getURL().endsWith('/before-sign-in') && !wc.isLoading())
+    const ses = wc.session
+    const html = (body) => new Response(body, { headers: { 'content-type': 'text/html' } })
+    ses.protocol.handle('https', (request) => {
+      const { pathname } = new URL(request.url)
+      if (pathname === '/out') return new Response(null, { status: 302, headers: { location: `${base}/after-sign-in` } })
+      if (pathname === '/to-sign-in') return new Response(null, { status: 302, headers: { location: signIn } })
+      if (pathname === '/signin') return html('<title>Fake sign-in</title><h1>Sign in</h1><script src="https://ssl.gstatic.com/sign-in.js"></script>')
+      if (pathname === '/embed') return html('<title>Embeds Google</title><iframe src="https://accounts.google.com/frame"></iframe>')
+      if (pathname.endsWith('.js')) return new Response('', { headers: { 'content-type': 'text/javascript' } })
+      return html('<title>Plain secure page</title>')
+    })
+    const signIn = 'https://accounts.google.com/signin'
+    const failed = []
+    const onFail = (_e, code, _d, url, isMainFrame) => {
+      if (isMainFrame) failed.push(`${code} ${url}`)
+    }
+    wc.on('did-fail-load', onFail)
+    const arrive = async (url, go) => {
+      go()
+      const ok = await until(() => wc.getURL() === url && !wc.isLoading())
+      await wait(300) // long enough for an error page drawn over the real one to show up
+      return ok
+    }
+    const seen = () => wc.executeJavaScript(`({ title: document.title, firefox: navigator.userAgent.includes('Firefox/'), appVersion: navigator.appVersion.includes('Firefox/'), brands: 'userAgentData' in navigator, chrome: 'chrome' in window })`)
+    const asFirefox = { title: 'Fake sign-in', firefox: true, appVersion: true, brands: false, chrome: false }
+
+    check('going to sign-in arrives', await arrive(signIn, () => signInTab.navigate(signIn)))
+    equal('with no failed load', failed, [])
+    equal('and the page isn\'t covered, and sees Firefox', await seen(), asFirefox)
+    const google = require(path.join(REPO, 'src/main/google-signin.js'))
+    const headers = (url, resourceType) => (google.presentsAsFirefox({ url, resourceType, webContents: wc }) ? 'firefox' : 'chrome')
+    equal('Google gets Firefox for the page', headers(signIn, 'mainFrame'), 'firefox')
+    equal('and for what the page loads', headers('https://ssl.gstatic.com/sign-in.js', 'script'), 'firefox')
+    equal('with no brand signals', google.firefoxHeaders({ 'user-agent': 'Chrome', 'Sec-CH-UA': 'a', 'sec-ch-ua-mobile': '?0', Accept: '*/*' }), { 'User-Agent': google.FIREFOX_UA, Accept: '*/*' })
+
+    wc.reload()
+    await wait(100)
+    await until(() => !wc.isLoading())
+    await wait(300)
+    equal('reloading it stays fine', [failed, await seen()], [[], asFirefox])
+
+    await arrive(`${base}/after-sign-in`, () => signInTab.navigate('https://accounts.google.com/out'))
+    equal('being sent back to a site works', failed, [])
+    check('and that site gets Chrome again', !(await wc.executeJavaScript('navigator.userAgent')).includes('Firefox/'))
+    check('going back to sign-in works', await arrive(signIn, () => wc.navigationHistory.goBack()))
+    equal('with no failed load', [failed, await seen()], [[], asFirefox])
+
+    await arrive(`${base}/before-sign-in`, () => signInTab.navigate(`${base}/before-sign-in`))
+    check('a site that redirects to sign-in gets there', await arrive(signIn, () => signInTab.navigate('https://example.test/to-sign-in')), wc.getURL())
+    equal('with no failed load', [failed, await seen()], [[], asFirefox])
+
+    const other = 'https://example.test/embed'
+    await arrive(other, () => signInTab.navigate(other))
+    equal('other sites get Chrome', headers(other, 'mainFrame'), 'chrome')
+    check('and see Chrome', !(await wc.executeJavaScript('navigator.userAgent')).includes('Firefox/') && (await wc.executeJavaScript(`'chrome' in window`)))
+    equal('Google embedded in another site stays Chrome', headers('https://accounts.google.com/frame', 'subFrame'), 'chrome')
+
+    wc.off('did-fail-load', onFail)
+    ses.protocol.unhandle('https')
+    shell.closeTab(signInTab.id)
+    await wait(100)
+  }
+
   console.log('\nDamaged saved data')
   const store = require(path.join(REPO, 'src/main/store.js'))
   store.set('session', { windows: [{ tabs: [{ title: 'no url' }, null], active: 'nonsense', bounds: 'nope' }] })

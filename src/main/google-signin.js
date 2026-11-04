@@ -3,13 +3,18 @@
 // alongside it (Sec-CH-UA / navigator.userAgentData) don't include "Google Chrome", and Google
 // flags the mismatch.
 //
-// The widely used workaround: present as Firefox on Google's sign-in pages only. Overriding the
-// user agent per tab also drops those brand signals, so the page sees a consistent Firefox. Every
-// other site keeps seeing Chrome.
-const { app } = require('electron')
+// The widely used workaround: present as Firefox on Google's sign-in pages only. Every other site
+// keeps seeing Chrome.
+//
+// This changes each request rather than calling webContents.setUserAgent, because changing a tab's
+// user agent mid-load reloads whatever page it's showing. That cancels the load in progress, so
+// sign-in would fail, or the tab would land back on the page it came from.
+const { ipcMain } = require('electron')
 const path = require('node:path')
 
 const SIGN_IN_HOSTS = new Set(['accounts.google.com'])
+// Each request this looks at costs a trip through the main process, so it skips everyone but Google.
+const GOOGLE_REQUESTS = ['*://*.google.com/*', '*://*.gstatic.com/*', '*://*.googleapis.com/*', '*://*.googleusercontent.com/*', '*://accounts.youtube.com/*']
 
 function firefoxUserAgent() {
   // Firefox ships every 4 weeks; stay close to the current release so Google doesn't call it outdated.
@@ -31,38 +36,28 @@ function isSignInUrl(url) {
   }
 }
 
-function attach(webContents) {
-  let firefox = false
+/** A sign-in page, and whatever that page loads. Google embedded in another site stays as it is. */
+function presentsAsFirefox({ resourceType, url, webContents }) {
+  if (resourceType === 'mainFrame') return isSignInUrl(url)
+  return Boolean(webContents) && !webContents.isDestroyed() && isSignInUrl(webContents.getURL())
+}
 
-  const use = (wantFirefox) => {
-    if (wantFirefox === firefox) return false
-    firefox = wantFirefox
-    webContents.setUserAgent(wantFirefox ? FIREFOX_UA : app.userAgentFallback)
-    return true
+function firefoxHeaders(headers) {
+  const result = { 'User-Agent': FIREFOX_UA }
+  for (const [name, value] of Object.entries(headers)) {
+    if (!/^(user-agent$|sec-ch-ua)/i.test(name)) result[name] = value
   }
-
-  // Entering sign-in: the user agent has to be right for the very first request, so switch and
-  // restart the navigation. Leaving sign-in: just switch back.
-  webContents.on('did-start-navigation', (details) => {
-    if (!details.isMainFrame || details.isSameDocument) return
-    const wantFirefox = isSignInUrl(details.url)
-    // loadURL replaces the navigation that's already underway.
-    if (use(wantFirefox) && wantFirefox) webContents.loadURL(details.url).catch(() => {})
-  })
-
-  webContents.on('will-redirect', (details) => {
-    if (!details.isMainFrame) return
-    const wantFirefox = isSignInUrl(details.url)
-    if (use(wantFirefox) && wantFirefox) {
-      details.preventDefault()
-      webContents.loadURL(details.url).catch(() => {})
-    }
-  })
+  return result
 }
 
 /** Applies the workaround to every tab and popup (e.g. "Sign in with Google" windows). */
 function setupGoogleSignIn(session) {
-  app.on('web-contents-created', (_event, webContents) => attach(webContents))
+  session.webRequest.onBeforeSendHeaders({ urls: GOOGLE_REQUESTS }, (details, callback) => {
+    callback(presentsAsFirefox(details) ? { requestHeaders: firefoxHeaders(details.requestHeaders) } : {})
+  })
+  ipcMain.on('google-signin:user-agent', (event) => {
+    event.returnValue = FIREFOX_UA
+  })
   session.registerPreloadScript({
     id: 'glasswing-google-signin',
     type: 'frame',
@@ -70,4 +65,4 @@ function setupGoogleSignIn(session) {
   })
 }
 
-module.exports = { setupGoogleSignIn, FIREFOX_UA }
+module.exports = { setupGoogleSignIn, presentsAsFirefox, firefoxHeaders, FIREFOX_UA }

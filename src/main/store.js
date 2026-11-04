@@ -16,16 +16,26 @@ let data = null
 let file = null
 let saveTimer = null
 
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
 function load() {
   file = path.join(app.getPath('userData'), 'glasswing.json')
   try {
     data = JSON.parse(fs.readFileSync(file, 'utf8'))
-  } catch {
+    if (!isPlainObject(data)) throw new Error('Saved state is not an object')
+  } catch (err) {
     data = {}
+    // Keep a damaged file for recovery rather than overwriting it on the next save.
+    if (err.code !== 'ENOENT') {
+      console.error('Saved state could not be read:', err.message)
+      try {
+        fs.renameSync(file, `${file}.corrupt`)
+      } catch {}
+    }
   }
-  data.favorites ??= DEFAULT_FAVORITES.slice()
-  data.history ??= []
-  data.permissions ??= {}
+  if (!Array.isArray(data.favorites)) data.favorites = DEFAULT_FAVORITES.slice()
+  if (!Array.isArray(data.history)) data.history = []
+  if (!isPlainObject(data.permissions)) data.permissions = {}
   data.session ??= null
 }
 
@@ -53,4 +63,4 @@ function flush() {
   }
 }
 
-module.exports = { get, set, flush }
+module.exports = { get, set, flush, DEFAULT_FAVORITES }

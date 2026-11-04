@@ -86,18 +86,27 @@ async function ask(webContents, permission, origin, details) {
 
 function setupPermissions(session) {
   session.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const decide = (allowed) => {
+      // Every use of the camera or mic comes through here, from any frame, so the tab's icons can't be dodged.
+      if (allowed && permission === 'media') {
+        const { BrowserShell } = require('./shell')
+        BrowserShell.fromWebContents(webContents)?.tabs.get(webContents.id)?.captureAllowed(details.mediaTypes, details.isMainFrame)
+      }
+      callback(allowed)
+    }
+
     const origin = originOf(details.requestingUrl)
-    if (ALWAYS_ALLOW.has(permission) || isTrusted(origin)) return callback(true)
+    if (ALWAYS_ALLOW.has(permission) || isTrusted(origin)) return decide(true)
 
     const saved = store.get('permissions')[decisionKey(origin, permission)]
-    if (typeof saved === 'boolean') return callback(saved)
+    if (typeof saved === 'boolean') return decide(saved)
 
     // Coalesce duplicate prompts (pages often request the same thing several times).
     const key = `${webContents.id} ${decisionKey(origin, permission)}`
     if (!pending.has(key)) {
       pending.set(key, ask(webContents, permission, origin, details).finally(() => pending.delete(key)))
     }
-    pending.get(key).then(callback, () => callback(false))
+    pending.get(key).then(decide, () => decide(false))
   })
 
   session.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {

@@ -21,9 +21,11 @@ async function restoreSessionCookies(session) {
   } catch {
     return
   }
+  if (!Array.isArray(cookies)) return
   await Promise.all(
     cookies.map((c) => {
-      const host = c.domain.replace(/^\./, '')
+      const host = String(c?.domain ?? '').replace(/^\./, '')
+      if (!host) return null
       return session.cookies
         .set({
           url: `${c.secure ? 'https' : 'http'}://${host}${c.path || '/'}`,

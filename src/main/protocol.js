@@ -5,8 +5,9 @@ const path = require('node:path')
 const fs = require('node:fs')
 const crypto = require('node:crypto')
 const { pathToFileURL } = require('node:url')
-const { SCHEME, SUGGEST_URL } = require('./constants')
-const store = require('./store')
+const { SCHEME } = require('./constants')
+const favorites = require('./favorites')
+const search = require('./search')
 
 const SRC_ROOT = path.join(__dirname, '..')
 const HOSTS = {
@@ -15,6 +16,7 @@ const HOSTS = {
   extensions: path.join(SRC_ROOT, 'pages', 'extensions'),
   passwords: path.join(SRC_ROOT, 'pages', 'passwords'),
   history: path.join(SRC_ROOT, 'pages', 'history'),
+  protection: path.join(SRC_ROOT, 'pages', 'protection'),
 }
 
 const json = (body, status = 200) =>
@@ -26,7 +28,7 @@ const forbidden = () => new Response('Forbidden', { status: 403 })
 async function fetchSuggestions(query) {
   if (!query.trim()) return []
   try {
-    const url = SUGGEST_URL.replace('%s', encodeURIComponent(query))
+    const url = search.current().suggest.replace('%s', encodeURIComponent(query))
     const res = await net.fetch(url, { signal: AbortSignal.timeout(2500) })
     const body = await res.json()
     // `type=list` returns ["query", ["a", "b"]]; the legacy format is [{ phrase }].
@@ -44,14 +46,6 @@ const TOKEN = crypto.randomUUID()
 /** Mutating endpoints only accept requests from our own pages. */
 function isTrusted(request) {
   return request.headers.get('x-glasswing-token') === TOKEN
-}
-
-function sanitizeFavorites(list) {
-  if (!Array.isArray(list)) return null
-  return list
-    .filter((f) => f && typeof f.url === 'string' && /^https?:\/\//i.test(f.url))
-    .slice(0, 48)
-    .map((f) => ({ title: String(f.title ?? '').slice(0, 80), url: f.url.slice(0, 2048) }))
 }
 
 function extensionSummary(ext) {
@@ -82,13 +76,17 @@ async function handleApi(request, url) {
     return json(await fetchSuggestions(url.searchParams.get('q') ?? ''))
   }
 
+  if (route[0] === 'search' && method === 'GET') {
+    const { name, search: address } = search.current()
+    return json({ name, url: address })
+  }
+
   if (route[0] === 'favorites' && host === 'newtab') {
-    if (method === 'GET') return json(store.get('favorites'))
+    if (method === 'GET') return json(favorites.list())
     if (method === 'PUT') {
       if (!isTrusted(request)) return forbidden()
-      const list = sanitizeFavorites(await request.json().catch(() => null))
+      const list = favorites.replace(await request.json().catch(() => null))
       if (!list) return json({ error: 'Invalid favorites' }, 400)
-      store.set('favorites', list)
       return json(list)
     }
   }
@@ -118,6 +116,21 @@ async function handleApi(request, url) {
       const body = await request.json().catch(() => ({}))
       return json(await clearBrowsingData(session.defaultSession, body))
     }
+  }
+
+  if (route[0] === 'protection' && host === 'protection') {
+    const blocker = require('./blocker')
+    if (method === 'GET' && !route[1]) return json(await blocker.details())
+    if (!isTrusted(request)) return forbidden()
+    const body = await request.json().catch(() => ({}))
+    if (method === 'PUT' && !route[1]) blocker.set(body ?? {})
+    else if (method === 'POST' && route[1] === 'allowed') {
+      if (!blocker.allowSite(body?.site)) return json({ error: 'Not a site' }, 400)
+    } else if (method === 'DELETE' && route[1] === 'allowed') blocker.removeAllowedSite(url.searchParams.get('site'))
+    else if (method === 'PUT' && route[1] === 'rules') blocker.setCustomRules(body?.rules)
+    else if (method === 'POST' && route[1] === 'update') await blocker.refresh()
+    else return notFound()
+    return json(await blocker.details())
   }
 
   if (route[0] === 'passwords' && host === 'passwords') {

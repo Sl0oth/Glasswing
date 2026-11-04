@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' glasswing: 'unsafe-inline'; script-src 'self'; connect-src 'self'"
+    />
+    <meta name="color-scheme" content="dark" />
+    <title>Protection</title>
+    <link rel="stylesheet" href="glasswing://extensions/extensions.css" />
+    <style>
+      .section { margin: 32px 0 12px; font-size: 13px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+      .card { grid-template-columns: 1fr auto; }
+      .row-note { margin-top: 2px; font-size: 12.5px; color: var(--text-dim); }
+      .switch { position: relative; width: 38px; height: 22px; padding: 0; border: 0; border-radius: 11px; background: rgba(255, 255, 255, 0.16); cursor: pointer; transition: background-color 0.15s; }
+      .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform 0.15s; }
+      .switch.on { background: #0a84ff; }
+      .switch.on::after { transform: translateX(16px); }
+      .add { display: flex; gap: 8px; margin-bottom: 10px; }
+      input[type='text'], textarea { flex: 1; width: 100%; box-sizing: border-box; padding: 8px 12px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 9px; outline: 0; background: rgba(255, 255, 255, 0.06); color: inherit; font: inherit; }
+      textarea { display: block; min-height: 110px; margin-bottom: 8px; font: 12.5px/1.5 Consolas, 'Cascadia Mono', monospace; resize: vertical; }
+      input:focus, textarea:focus { box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.6); }
+      .hint { margin: 0 0 10px; font-size: 12.5px; color: var(--text-dim); }
+      .hint code { font: 12px Consolas, 'Cascadia Mono', monospace; color: inherit; }
+      .saved { margin-left: 10px; font-size: 12.5px; color: var(--text-dim); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Protection</h1>
+          <p class="sub" id="total"></p>
+        </div>
+      </header>
+
+      <div class="list">
+        <div class="card">
+          <div><div class="name">Block ads</div><div class="row-note">Ads, and the empty boxes they leave behind</div></div>
+          <button id="ads" class="switch" role="switch" aria-label="Block ads"></button>
+        </div>
+        <div class="card">
+          <div><div class="name">Block trackers</div><div class="row-note">Scripts that follow you between sites</div></div>
+          <button id="trackers" class="switch" role="switch" aria-label="Block trackers"></button>
+        </div>
+      </div>
+
+      <h2 class="section">Allowed sites</h2>
+      <p class="hint">Nothing is blocked on these sites, or their subdomains. Use this if blocking breaks a site you trust.</p>
+      <form id="add-site" class="add">
+        <input id="site" type="text" placeholder="example.com" spellcheck="false" autocomplete="off" aria-label="Site to allow" />
+        <button type="submit" class="secondary">Allow</button>
+      </form>
+      <div id="sites" class="list"></div>
+
+      <h2 class="section">Your own rules</h2>
+      <p class="hint">
+        One per line, in the same format as other blockers. <code>||ads.example.com^</code> blocks a server,
+        <code>@@||example.com/app.js</code> makes an exception, and <code>example.com##.banner</code> hides something on a page.
+      </p>
+      <textarea id="rules" spellcheck="false" aria-label="Your own rules"></textarea>
+      <button id="save-rules" class="secondary">Save Rules</button><span id="rules-saved" class="saved"></span>
+
+      <h2 class="section">Filter lists</h2>
+      <div class="list">
+        <div class="card">
+          <div><div class="name">EasyList, EasyPrivacy and others</div><div id="updated" class="row-note"></div></div>
+          <button id="update" class="secondary">Update Now</button>
+        </div>
+      </div>
+    </main>
+    <script src="protection.js"></script>
+  </body>
+</html>

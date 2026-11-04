@@ -2,6 +2,7 @@ const { WebContentsView } = require('electron')
 const { TRANSPARENT } = require('./constants')
 const { resolveInput, isInternal } = require('./url')
 const history = require('./history')
+const blocker = require('./blocker')
 
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5]
 const PAGE_BACKGROUND = '#ffffff'
@@ -37,6 +38,12 @@ function errorPageScript(url, code, description) {
   })()`
 }
 
+/**
+ * What a tab is recording. The page itself reports when it stops (src/preload/capture.js), but only
+ * the top of the page can: a frame embedded in it stays marked as recording until the page changes.
+ */
+const noCapture = () => ({ page: { audio: false, video: false }, frames: { audio: false, video: false } })
+
 class Tab {
   constructor(shell, { url, webContents, title, lazy = false, openerId = null } = {}) {
     this.shell = shell
@@ -52,6 +59,12 @@ class Tab {
     this.loading = false
     this.pendingUrl = null
     this.pendingTitle = null
+    // Last known values, so a tab can still be described after its page is gone.
+    this.lastUrl = ''
+    this.lastTitle = ''
+    this.crashPromptOpen = false
+    this.split = null // { left, right, ratio }, shared with the tab on the other side
+    this.capture = noCapture()
 
     this.view.setBackgroundColor(TRANSPARENT)
     this.bindEvents()
@@ -65,12 +78,15 @@ class Tab {
   }
 
   get url() {
-    return this.pendingUrl ?? this.webContents.getURL()
+    if (this.pendingUrl) return this.pendingUrl
+    if (!this.webContents.isDestroyed()) this.lastUrl = this.webContents.getURL()
+    return this.lastUrl
   }
 
   get title() {
     if (this.pendingTitle) return this.pendingTitle
-    return this.webContents.getTitle() || this.url || 'New Tab'
+    if (!this.webContents.isDestroyed()) this.lastTitle = this.webContents.getTitle()
+    return this.lastTitle || this.url || 'New Tab'
   }
 
   loadURL(url) {
@@ -81,14 +97,82 @@ class Tab {
     this.webContents.loadURL(url).catch(() => {})
   }
 
-  /** Lazily restored tabs only load once they're first shown. */
+  /** Lazily restored tabs load once they're first shown; crashed background tabs recover the same way. */
   ensureLoaded() {
     if (this.pendingUrl) this.loadURL(this.pendingUrl)
+    else if (this.webContents.isCrashed()) this.recover()
+  }
+
+  recover() {
+    const { url } = this
+    if (url) this.loadURL(url)
+  }
+
+  /** The page's process died. Offer to bring it back, unless it isn't on screen yet. */
+  async handleCrash() {
+    const { shell } = this
+    this.loading = false
+    shell.tabChanged(this)
+    if (shell.activeTab() !== this || this.crashPromptOpen) return
+    this.crashPromptOpen = true
+    let host = this.url
+    try {
+      host = new URL(host).host || host
+    } catch {}
+    const { button } = await require('./prompts').ask(shell, {
+      title: 'This page stopped working',
+      message: host,
+      buttons: [
+        { id: 'close', label: 'Close Tab', style: 'secondary' },
+        { id: 'reload', label: 'Reload', style: 'primary' },
+      ],
+      cancelId: 'dismiss',
+    })
+    this.crashPromptOpen = false
+    if (this.webContents.isDestroyed()) return
+    if (button === 'close') shell.closeTab(this.id)
+    else if (button === 'reload') this.recover()
   }
 
   navigate(input) {
     const url = resolveInput(input)
     if (url) this.loadURL(url)
+  }
+
+  get usingCamera() {
+    return this.capture.page.video || this.capture.frames.video
+  }
+
+  get usingMicrophone() {
+    return this.capture.page.audio || this.capture.frames.audio
+  }
+
+  updateCapture(change) {
+    const before = this.usingCamera || this.usingMicrophone
+    change()
+    // The icons are no use if the toolbar is hidden when a site starts recording.
+    if (!before && (this.usingCamera || this.usingMicrophone)) this.shell.peek()
+    this.shell.tabChanged(this)
+  }
+
+  /** The site was just given the camera or mic. It may not say which, so assume both. */
+  captureAllowed(mediaTypes, isMainFrame) {
+    const types = mediaTypes?.length ? mediaTypes : ['audio', 'video']
+    this.updateCapture(() => {
+      const side = isMainFrame ? this.capture.page : this.capture.frames
+      for (const type of types) if (type === 'audio' || type === 'video') side[type] = true
+    })
+  }
+
+  /** The page's own count of what it has running. */
+  captureReported(audio, video) {
+    this.updateCapture(() => {
+      this.capture.page = { audio: audio > 0, video: video > 0 }
+    })
+  }
+
+  captureEnded() {
+    if (this.usingCamera || this.usingMicrophone) this.updateCapture(() => (this.capture = noCapture()))
   }
 
   /** Internal pages are see-through; the web gets an opaque canvas like any other browser. */
@@ -98,12 +182,10 @@ class Tab {
 
   zoom(direction) {
     const wc = this.webContents
-    if (direction === 0) return wc.setZoomFactor(1)
     const current = wc.getZoomFactor()
-    const next =
-      direction > 0
-        ? ZOOM_STEPS.find((z) => z > current + 0.001)
-        : ZOOM_STEPS.findLast((z) => z < current - 0.001)
+    let next = 1
+    if (direction > 0) next = ZOOM_STEPS.find((z) => z > current + 0.001)
+    else if (direction < 0) next = ZOOM_STEPS.findLast((z) => z < current - 0.001)
     if (next) wc.setZoomFactor(next)
     this.shell.tabChanged(this)
   }
@@ -138,6 +220,7 @@ class Tab {
       this.favicon = null
       this.applyBackground(url)
       history.record(url, wc.getTitle())
+      this.captureEnded()
       changed()
     })
     wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
@@ -157,16 +240,30 @@ class Tab {
       if (this.shell.activeTab() !== this) return
       this.shell.sendEvent('found', { active: result.activeMatchOrdinal, matches: result.matches })
     })
-    wc.on('enter-html-full-screen', () => this.shell.setHtmlFullscreen(true))
+    // Clicking into the other side of a split view makes it the tab the toolbar is about.
+    wc.on('focus', () => this.shell.paneFocused(this))
+    wc.on('enter-html-full-screen', () => {
+      this.shell.paneFocused(this)
+      this.shell.setHtmlFullscreen(true)
+    })
     wc.on('leave-html-full-screen', () => this.shell.setHtmlFullscreen(false))
     wc.on('context-menu', (_e, params) => require('./menus').pageContextMenu(this, params))
     wc.on('before-input-event', (event, input) => {
       if (require('./shortcuts').handle(this.shell, input)) event.preventDefault()
     })
-    wc.on('render-process-gone', changed)
+    wc.on('render-process-gone', (_e, details) => {
+      this.captureEnded()
+      changed()
+      if (details.reason !== 'clean-exit' && !this.shell.closed && !this.shell.constructor.quitting) this.handleCrash()
+    })
     wc.on('destroyed', () => this.shell.closeTab(this.id))
+    // Websites can't send people to the browser's own pages.
+    wc.on('will-navigate', (event) => {
+      if (isInternal(event.url) && !isInternal(wc.getURL())) event.preventDefault()
+    })
 
-    wc.setWindowOpenHandler(({ disposition }) => {
+    wc.setWindowOpenHandler(({ disposition, url }) => {
+      if (isInternal(url) && !isInternal(wc.getURL())) return { action: 'deny' }
       // Popups with window features (OAuth, payment flows) stay real windows so `window.opener` works.
       if (disposition === 'new-window') {
         return {
@@ -190,18 +287,24 @@ class Tab {
 
   state() {
     const wc = this.webContents
+    const alive = !wc.isDestroyed()
     return {
       id: this.id,
       title: this.title,
       url: this.url,
       favicon: this.favicon,
       loading: this.loading,
-      canGoBack: wc.navigationHistory.canGoBack(),
-      canGoForward: wc.navigationHistory.canGoForward(),
-      audible: wc.isCurrentlyAudible(),
-      muted: wc.isAudioMuted(),
-      zoom: Math.round(wc.getZoomFactor() * 100),
-      crashed: wc.isCrashed(),
+      canGoBack: alive && wc.navigationHistory.canGoBack(),
+      canGoForward: alive && wc.navigationHistory.canGoForward(),
+      audible: alive && wc.isCurrentlyAudible(),
+      muted: alive && wc.isAudioMuted(),
+      camera: alive && this.usingCamera,
+      microphone: alive && this.usingMicrophone,
+      zoom: alive ? Math.round(wc.getZoomFactor() * 100) : 100,
+      crashed: alive && wc.isCrashed(),
+      blocked: blocker.countsFor(this.id),
+      split: this.split ? (this.split.left === this.id ? 'left' : 'right') : null,
+      splitPartner: this.split ? (this.split.left === this.id ? this.split.right : this.split.left) : null,
     }
   }
 

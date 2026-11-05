@@ -370,6 +370,7 @@ function showDropMarker(x) {
 
 function render() {
   const body = document.body.classList
+  body.toggle('private', Boolean(state.private))
   body.toggle('single-tab', state.tabs.length <= 1)
   body.toggle('chrome-hidden', Boolean(state.chromeHidden))
   body.toggle('revealed', Boolean(state.revealed))
@@ -1480,7 +1481,7 @@ function showPrompt(data) {
   const inputs = new Map()
   for (const field of data.fields ?? []) {
     const label = Object.assign(document.createElement('label'), { className: 'prompt-field', textContent: field.label })
-    const input = Object.assign(document.createElement('input'), { type: 'text', value: field.value ?? '', spellcheck: false })
+    const input = Object.assign(document.createElement('input'), { type: field.type === 'password' ? 'password' : 'text', value: field.value ?? '', spellcheck: false })
     label.append(input)
     el.append(label)
     inputs.set(field.id, input)
@@ -1498,7 +1499,7 @@ function showPrompt(data) {
 
   // Enter in a field means the primary button.
   el.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || e.target.type !== 'text') return
+    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || !['text', 'password'].includes(e.target.type)) return
     const primary = (data.buttons ?? []).find((b) => b.style === 'primary')
     if (primary) answerPrompt(data.id, primary.id, checkbox?.checked, collect())
   })
@@ -1584,6 +1585,9 @@ api.onEvent((type, payload) => {
       break
     case 'prompt':
       showPrompt(payload)
+      break
+    case 'prompt-close':
+      answerPrompt(payload, prompts.get(payload)?.data.cancelId)
       break
   }
 })

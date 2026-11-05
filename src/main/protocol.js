@@ -67,13 +67,16 @@ function extensionIconPath(ext) {
   return best ? path.join(ext.path, icons[best]) : null
 }
 
-async function handleApi(request, url) {
+async function handleApi(request, url, isPrivate) {
   const host = url.host
   const route = url.pathname.replace(/^\/api\//, '').split('/')
   const method = request.method
 
+  if (route[0] === 'private' && method === 'GET') return json(isPrivate)
+
   if (route[0] === 'suggest' && method === 'GET') {
-    return json(await fetchSuggestions(url.searchParams.get('q') ?? ''))
+    // Suggestions send what you're typing to the search engine with every key.
+    return json(isPrivate ? [] : await fetchSuggestions(url.searchParams.get('q') ?? ''))
   }
 
   if (route[0] === 'search' && method === 'GET') {
@@ -165,7 +168,7 @@ async function handleApi(request, url) {
       const page = ext?.manifest?.options_ui?.page ?? ext?.manifest?.options_page
       if (!page) return notFound()
       const { BrowserShell } = require('./shell')
-      const shell = BrowserShell.lastFocused()
+      const shell = BrowserShell.lastNormal()
       shell?.createTab({ url: `chrome-extension://${id}/${page.replace(/^\//, '')}` })
       return json({ ok: true })
     }
@@ -200,7 +203,7 @@ function serveFile(url) {
   return net.fetch(pathToFileURL(file).toString())
 }
 
-function registerInternalProtocol(ses) {
+function registerInternalProtocol(ses, { isPrivate = false } = {}) {
   ses.protocol.handle(SCHEME, (request) => {
     let url
     try {
@@ -208,7 +211,7 @@ function registerInternalProtocol(ses) {
     } catch {
       return notFound()
     }
-    if (url.pathname.startsWith('/api/')) return handleApi(request, url)
+    if (url.pathname.startsWith('/api/')) return handleApi(request, url, isPrivate)
     return serveFile(url)
   })
 }

@@ -106,6 +106,15 @@ just says it couldn't reach the server.
   - Sign-in, payment and CAPTCHA services are never blocked (`SAFEGUARDED_HOSTS` in `src/main/blocker.js`).
   - Lists download once in the background, are saved in the profile folder, and refresh weekly.
   - Video ads on some sites, YouTube especially, may still get through.
+  - When ads are blocked, YouTube makes some signed-in accounts wait about 5 seconds before a video starts. One
+    script in the lists tries to dodge this by reloading the player, which can loop forever, so it's left out
+    (`reloadsYouTubePlayer` in `src/main/blocker.js`). Turning blocking off for YouTube removes the wait.
+- **Private windows**: Ctrl+Shift+N, the ⋯ panel, or right-click a link. The toolbar turns purple and says Private.
+  - Pages, cookies, logins and site data stay in memory and are gone once the last private window closes.
+  - Nothing goes into history or the saved session, and typing isn't sent to the search engine for suggestions.
+  - Passwords aren't filled in or saved, site permissions aren't remembered, and extensions are off. Blocking still works.
+  - Downloaded files and favorites you add stay. Websites and your network can still see what you do.
+  - A tab can't be dragged between a private window and a normal one.
 - **Problems**: errors are written to `glasswing.log` in the profile folder rather than shown as
   dialogs. A page that crashes offers a Reload card, and a background tab reloads when you select it.
 - **Prompts and menus** (save password, site permissions, add extension, right-click, ⋯) are drawn
@@ -121,6 +130,7 @@ just says it couldn't reach the server.
 | Action | Shortcut |
 | --- | --- |
 | New tab / window | Ctrl+T / Ctrl+N |
+| New private window | Ctrl+Shift+N |
 | Close tab / reopen closed | Ctrl+W / Ctrl+Shift+T |
 | Search / address bar | Ctrl+K, Ctrl+L, Ctrl+E, Alt+D, F6 |
 | History | Ctrl+H (or right-click **+** for the last 10 sites) |

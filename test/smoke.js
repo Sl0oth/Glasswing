@@ -80,6 +80,13 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/media') return res.end(page('Media', '#fff', '<iframe id="inner" src="/media-frame" allow="camera;microphone"></iframe>'))
   if (url.pathname === '/dark') return res.end(page('Dark page', '#101014'))
   if (url.pathname === '/slow') return setTimeout(() => res.end(page('Slow page', '#fff')), 1200)
+  if (url.pathname.startsWith('/login-')) {
+    if (url.pathname === '/login-embed') return res.end(page('Embeds a login', '#fff', `<img src="${url.searchParams.get('src')}">`))
+    if (req.headers.authorization === `Basic ${Buffer.from('me:secret').toString('base64')}`) return res.end(page('Signed in', '#fff'))
+    res.statusCode = 401
+    res.setHeader('www-authenticate', `Basic realm="Test ${url.pathname}"`)
+    return res.end(page('Login needed', '#fff'))
+  }
   if (url.pathname === '/links') {
     return res.end(page('Links', '#fff', '<a id="blank" target="_blank" href="/white">new tab</a> <a id="internal" href="glasswing://history/">internal</a>'))
   }
@@ -983,6 +990,7 @@ async function run() {
     const html = (body) => new Response(body, { headers: { 'content-type': 'text/html' } })
     ses.protocol.handle('https', (request) => {
       const { pathname } = new URL(request.url)
+      if (new URL(request.url).hostname === 'no-secure-version.test') return Response.error()
       if (pathname === '/out') return new Response(null, { status: 302, headers: { location: `${base}/after-sign-in` } })
       if (pathname === '/to-sign-in') return new Response(null, { status: 302, headers: { location: signIn } })
       if (pathname === '/signin') return html('<title>Fake sign-in</title><h1>Sign in</h1><script src="https://ssl.gstatic.com/sign-in.js"></script>')
@@ -1039,10 +1047,301 @@ async function run() {
     check('and see Chrome', !(await wc.executeJavaScript('navigator.userAgent')).includes('Electron/') && (await wc.executeJavaScript(`'chrome' in window`)))
     equal('Google embedded in another site stays Chrome', headers('https://accounts.google.com/frame', 'subFrame'), 'chrome')
 
+    console.log('\nPrivacy')
+    const privacy = require(path.join(REPO, 'src/main/privacy.js'))
+    equal('websites can\'t read your local network address', wc.getWebRTCIPHandlingPolicy(), 'default_public_interface_only')
+    const secure = 'https://example.test/plain'
+    // Only the address: a redirect goes around the stand-in. The fallback below follows the real one.
+    equal('a plain address moves to https', privacy.saferUrl('http://moves.test/plain?a=1'), 'https://moves.test/plain?a=1')
+    check('tracking tags come off the address', await arrive(`${secure}?keep=1#top`, () => signInTab.navigate(`${secure}?utm_source=a&keep=1&fbclid=b#top`)), wc.getURL())
+    check('an address that was only tags ends up clean', await arrive(secure, () => signInTab.navigate(`${secure}?utm_medium=a&gclid=b`)), wc.getURL())
+    equal('everything else stays exactly as written', privacy.saferUrl('https://a.test/x?q=a+b%20c&ref=me&id=7'), null)
+    equal('tags can be left on', privacy.saferUrl('https://a.test/?utm_source=a', { stripTrackers: false }), null)
+    equal('your own network stays plain', [privacy.saferUrl('http://192.168.1.1/'), privacy.saferUrl('http://router/'), privacy.saferUrl('http://nas.local/'), privacy.saferUrl('http://localhost/')], [null, null, null, null])
+    equal('and so does an address with a port', privacy.saferUrl('http://a.test:8080/'), null)
+    equal('other kinds of address are left alone', privacy.saferUrl('glasswing://newtab/?utm_source=a'), null)
+    blocker.allowSite('example.test')
+    const excepted = `${secure}?utm_source=a`
+    check('a site with the shield off keeps its tags', await arrive(excepted, () => signInTab.navigate(excepted)), wc.getURL())
+    blocker.removeAllowedSite('example.test')
+    await until(() => !wc.isLoading())
+    failed.length = 0
+    signInTab.navigate('http://no-secure-version.test/page')
+    check('a site with no secure version falls back to plain', await until(() => failed.some((f) => f.includes('http://no-secure-version.test/page')), 8000), JSON.stringify(failed))
+    check('after trying the secure one first', failed.some((f) => f.includes('https://no-secure-version.test/page')), JSON.stringify(failed))
+    equal('and isn\'t sent back to https', privacy.saferUrl('http://no-secure-version.test/page'), null)
+    await until(() => !wc.isLoading())
+    failed.length = 0
+
     wc.off('did-fail-load', onFail)
     ses.protocol.unhandle('https')
     shell.closeTab(signInTab.id)
     await wait(100)
+  }
+
+  console.log('\nUsername and password boxes')
+  {
+    const prompt = (title) => ui(shell, `[...document.querySelectorAll('.prompt:not(.leaving)')].find((p) => p.querySelector('.prompt-title')?.textContent === ${JSON.stringify(title)})?.textContent ?? ''`)
+    const answer = (label, user = '', pass = '') => ui(shell, `(() => {
+      const card = [...document.querySelectorAll('.prompt:not(.leaving)')].pop()
+      const inputs = card.querySelectorAll('.prompt-field input')
+      if (inputs[0]) inputs[0].value = ${JSON.stringify(user)}
+      if (inputs[1]) inputs[1].value = ${JSON.stringify(pass)}
+      ;[...card.querySelectorAll('.btn')].find((b) => b.textContent === ${JSON.stringify(label)}).click()
+    })()`)
+    const signIn = shell.createTab({ url: `${base}/login-a` })
+    const swc = signIn.webContents
+    check('a site that asks gets a box', await until(async () => (await prompt('Sign in')).includes('wants a username and password'), 4000))
+    check('the password is hidden as you type', await ui(shell, `Boolean(document.querySelector('.prompt:not(.leaving) .prompt-field input[type=password]'))`))
+    check('it warns when the connection isn\'t encrypted', (await prompt('Sign in')).includes('isn’t encrypted'))
+    await answer('Sign In', 'me', 'wrong')
+    check('a wrong password asks again and says so', await until(async () => (await prompt('Sign in')).includes('That didn’t work'), 4000))
+    await answer('Sign In', 'me', 'secret')
+    check('the right one opens the page', await until(() => swc.getTitle() === 'Signed in', 4000), swc.getTitle())
+    // Another host: the browser now rightly remembers the login for this one.
+    signIn.navigate(`${base.replace('127.0.0.1', 'localhost')}/login-b`)
+    await until(async () => (await prompt('Sign in')).includes('wants a username'), 4000)
+    await answer('Cancel')
+    check('cancelling shows the site\'s own page', await until(() => swc.getTitle() === 'Login needed', 4000), swc.getTitle())
+    signIn.navigate(`${base}/login-embed?src=${encodeURIComponent(`${base.replace('127.0.0.1', 'localhost')}/login-c`)}`)
+    await until(() => swc.getTitle() === 'Embeds a login', 4000)
+    await wait(700)
+    equal('an image from another site can\'t ask', await prompt('Sign in'), '')
+
+    console.log('\nA page that stops responding')
+    const title = 'This page isn’t responding'
+    swc.emit('unresponsive')
+    check('you get a way out', await until(async () => (await prompt(title)).length > 0))
+    swc.emit('unresponsive')
+    await wait(150)
+    equal('only one card at a time', await ui(shell, `[...document.querySelectorAll('.prompt:not(.leaving) .prompt-title')].filter((t) => t.textContent === ${JSON.stringify(title)}).length`), 1)
+    swc.emit('responsive')
+    check('and it goes away if the page recovers', await until(async () => (await prompt(title)) === ''))
+    await wait(250)
+    swc.emit('unresponsive')
+    await until(async () => (await prompt(title)).length > 0)
+    await answer('Wait')
+    check('Wait leaves the page alone', await until(async () => (await prompt(title)) === '') && !swc.isCrashed())
+    await wait(250)
+    swc.emit('unresponsive')
+    await until(async () => (await prompt(title)).length > 0)
+    await answer('Reload')
+    check('Reload brings the page back', await until(() => !swc.isCrashed() && !swc.isLoading() && swc.getTitle() === 'Embeds a login', 6000), swc.getTitle())
+    equal('without a crash message on top', await prompt('This page stopped working'), '')
+    const background = shell.createTab({ url: `${base}/white`, active: false })
+    await until(() => !background.webContents.isLoading())
+    background.webContents.emit('unresponsive')
+    await wait(200)
+    equal('a tab you aren\'t looking at doesn\'t interrupt you', await prompt(title), '')
+    shell.closeTab(background.id)
+    shell.closeTab(signIn.id)
+    await wait(100)
+  }
+
+  console.log('\nYouTube\'s player')
+  {
+    const { reloadsYouTubePlayer } = require(path.join(REPO, 'src/main/blocker.js'))
+    check('the filter list script that restarts videos doesn\'t run', reloadsYouTubePlayer('x(`e\\.loadVideoById\\(o%2Cs\\)`,`%22onSnackbarMessage%22`)'))
+    check('scripts that remove ads still do', !reloadsYouTubePlayer('setConstant(`ytInitialPlayerResponse\\.playerAds`,`undefined`)'))
+  }
+
+  console.log('\nPrivate windows')
+  {
+    const { session } = electron
+    const history = require(path.join(REPO, 'src/main/history.js'))
+    const blocker = require(path.join(REPO, 'src/main/blocker.js'))
+    const shortcuts = require(path.join(REPO, 'src/main/shortcuts.js'))
+    const tabDrag = require(path.join(REPO, 'src/main/tab-drag.js'))
+    const storeNow = require(path.join(REPO, 'src/main/store.js'))
+    const MARKER = 'privatemarker7f3a'
+    const NORMAL_MARKER = 'normalmarker7f3a'
+    const loaded = (wc) => until(() => !wc.isLoading(), 5000)
+    const inPage = (wc, code) => wc.executeJavaScript(code, true)
+
+    const count = BrowserShell.all.size
+    shortcuts.handle(shell, { type: 'keyDown', control: true, shift: true, alt: false, meta: false, key: 'N' })
+    const priv = [...BrowserShell.all].find((s) => s.private)
+    check('Ctrl+Shift+N opens a private window', Boolean(priv) && BrowserShell.all.size === count + 1)
+    const ptab = priv.activeTab()
+    const pwc = ptab.webContents
+    const pses = pwc.session
+    check('its session is kept in memory only', pses !== session.defaultSession && !pses.isPersistent() && pses.getStoragePath() == null, String(pses.getStoragePath()))
+    check('its toolbar shares that session', priv.ui.webContents.session === pses)
+    await until(() => ui(priv, `document.body.classList.contains('private')`).catch(() => false))
+    check('the toolbar says it is private', await ui(priv, `getComputedStyle(document.getElementById('private-badge')).display !== 'none'`))
+    check('a normal window doesn\'t', await ui(shell, `getComputedStyle(document.getElementById('private-badge')).display === 'none'`))
+    equal('the window\'s name says so too', priv.win.getTitle(), 'Glasswing (Private)')
+    check('the ⋯ menu offers one', await ui(shell, `Boolean(document.querySelector('[data-action="new-private-window"]'))`))
+    await until(() => inPage(pwc, `!document.getElementById('private-note')?.hidden`).catch(() => false))
+    check('its new tab page explains what\'s kept', await inPage(pwc, `/forgets the pages/.test(document.getElementById('private-note').textContent) && !document.getElementById('private-note').hidden`))
+
+    const ntab = shell.createTab({ url: 'glasswing://newtab/' })
+    await loaded(ntab.webContents)
+    await wait(200)
+    check('a normal new tab page doesn\'t show that', await inPage(ntab.webContents, `document.getElementById('private-note').hidden`))
+    shell.closeTab(ntab.id)
+
+    ptab.navigate(`${base}/${MARKER}`)
+    await until(() => pwc.getTitle().includes(MARKER), 5000)
+    await inPage(pwc, `document.cookie = 'who=${MARKER}; max-age=99999'; localStorage.setItem('who', '${MARKER}'); 1`)
+    equal('pages load with the same browser identity', pwc.getUserAgent(), shell.activeTab().webContents.getUserAgent())
+    await wait(300)
+    check('it stays out of history', !JSON.stringify(history.list({ search: MARKER, offset: 0, limit: 10 })).includes(MARKER) && !JSON.stringify(history.query(MARKER, 8)).includes(MARKER))
+    equal('its cookie stays out of normal browsing', (await session.defaultSession.cookies.get({ name: 'who' })).length, 0)
+    equal('it can read its own cookie', (await pses.cookies.get({ name: 'who' })).length, 1)
+    await session.defaultSession.cookies.set({ url: base, name: 'mine', value: 'normal' })
+    equal('normal cookies stay out of it', (await pses.cookies.get({ name: 'mine' })).length, 0)
+    await session.defaultSession.cookies.remove(base, 'mine')
+
+    const normalTab = shell.createTab({ url: `${base}/${NORMAL_MARKER}` })
+    await loaded(normalTab.webContents)
+    await wait(200)
+    const suggest = (from, text) => ui(from, `window.glasswing.invoke('suggest-local', ${JSON.stringify(text)})`)
+    equal('normal windows don\'t suggest its tabs', (await suggest(shell, MARKER)).tabs.length, 0)
+    equal('it doesn\'t suggest normal tabs', (await suggest(priv, NORMAL_MARKER)).tabs.length, 0)
+    equal('or your history', (await suggest(priv, NORMAL_MARKER)).history.length, 0)
+    equal('typing isn\'t sent to the search engine', await ui(priv, `window.glasswing.invoke('suggest-search', 'anything')`), [])
+    shell.closeTab(normalTab.id)
+
+    BrowserShell.saveSession()
+    check('it isn\'t saved with your session', !JSON.stringify(storeNow.get('session')).includes(MARKER))
+    equal('even as the only window open, your session is kept', (() => {
+      const before = JSON.stringify(storeNow.get('session'))
+      const all = [...BrowserShell.all]
+      BrowserShell.all.clear()
+      BrowserShell.all.add(priv)
+      BrowserShell.saveSession()
+      BrowserShell.all.clear()
+      for (const s of all) BrowserShell.all.add(s)
+      return JSON.stringify(storeNow.get('session')) === before
+    })(), true)
+    BrowserShell.focused = priv
+    check('links from other apps go to a normal window', BrowserShell.lastNormal() === shell)
+
+    const hitsBefore = hits.length
+    ptab.navigate(`${base}/ads`)
+    await until(() => pwc.getTitle() === 'Ads', 5000)
+    await wait(300)
+    const pageHits = hits.slice(hitsBefore)
+    check('ads and trackers are blocked here too', pageHits.includes('/normal.js') && !pageHits.includes('/banner-ad.js') && !pageHits.includes('/tracker-pixel.gif'), pageHits.join(' '))
+    const preloads = pses.getPreloadScripts().map((p) => p.id)
+    check('saved passwords can\'t be filled in', !preloads.includes('glasswing-autofill'), preloads.join(' '))
+    check('sign-in and the camera icons still work', preloads.includes('glasswing-google-signin') && preloads.includes('glasswing-capture'), preloads.join(' '))
+
+    // Permissions
+    ptab.navigate(`${base}/permissions`)
+    await until(() => pwc.getTitle().includes('/permissions'), 5000)
+    const permissionsBefore = JSON.stringify(storeNow.get('permissions'))
+    pwc.executeJavaScript(`Notification.requestPermission()`, true).catch(() => {})
+    const askedHere = await until(() => ui(priv, `Boolean([...document.querySelectorAll('.prompt:not(.leaving)')].find((p) => p.textContent.includes('show notifications')))`), 4000)
+    check('sites have to ask', askedHere)
+    equal('with no offer to remember', await ui(priv, `document.querySelectorAll('.prompt:not(.leaving) input[type=checkbox]').length`), 0)
+    await ui(priv, `[...[...document.querySelectorAll('.prompt:not(.leaving)')].pop().querySelectorAll('.btn')].find((b) => b.textContent === 'Allow').click()`)
+    await wait(300)
+    equal('and nothing is saved', JSON.stringify(storeNow.get('permissions')), permissionsBefore)
+
+    // Popups, like "Sign in with Google", stay on the private side.
+    const before = new Set(BrowserWindow.getAllWindows())
+    await inPage(pwc, `window.open(${JSON.stringify(`${base}/popup`)}, '_blank', 'width=320,height=320'); 1`)
+    await until(() => BrowserWindow.getAllWindows().some((w) => !before.has(w)), 3000)
+    const popup = BrowserWindow.getAllWindows().find((w) => !before.has(w))
+    check('a popup stays private', popup?.webContents.session === pses)
+    popup?.destroy()
+
+    // Downloads
+    const dlDir = path.join(profile, 'private-downloads')
+    fs.mkdirSync(dlDir, { recursive: true })
+    const realDownloads = app.getPath('downloads')
+    app.setPath('downloads', dlDir)
+    pwc.downloadURL(`${base}/${MARKER}-file.bin`)
+    const listOf = (from) => ui(from, `window.glasswing.invoke('downloads')`)
+    check('a download shows in the private window', await until(async () => (await listOf(priv)).length === 1, 4000))
+    equal('and not in a normal one', (await listOf(shell)).length, 0)
+
+    // Moving tabs
+    const second = priv.createTab({ url: `${base}/second-private`, active: false })
+    await loaded(second.webContents)
+    const moved = priv.moveToNewWindow(second)
+    check('a tab moved to its own window stays private', moved?.private === true && second.webContents.session === pses)
+    moved.win.close()
+    await until(() => !BrowserShell.all.has(moved), 3000)
+    const third = priv.createTab({ url: `${base}/third-private`, active: false })
+    const shellCount = shell.order.length
+    priv.win.setBounds(win.getBounds()) // so the pointer below is over both
+    BrowserShell.recent = [shell, priv]
+    moveCursor(300, 300)
+    tabDrag.start(priv, third.id)
+    await wait(60)
+    tabDrag.end()
+    await wait(100)
+    check('dragging a private tab onto a normal window doesn\'t move it', priv.tabs.has(third.id) && shell.order.length === shellCount)
+    priv.closeTab(third.id)
+    const normalDrag = shell.createTab({ url: `${base}/white`, active: false })
+    BrowserShell.recent = [priv, shell]
+    tabDrag.start(shell, normalDrag.id)
+    await wait(60)
+    tabDrag.end()
+    await wait(100)
+    check('and the same the other way', shell.tabs.has(normalDrag.id) && !priv.tabs.has(normalDrag.id))
+    shell.closeTab(normalDrag.id)
+    BrowserShell.recent = [shell]
+    BrowserShell.focused = shell
+    moveCursor(600, 600)
+
+    // Pages about your own data open on the normal side.
+    const filler = shell.createTab({ url: `${base}/white` }) // a new tab page would just be reused
+    const privTabs = priv.order.length
+    menus.runAction(priv, 'history')
+    check('History opens in a normal window', await until(() => shell.activeTab().url.startsWith('glasswing://history')) && priv.order.length === privTabs, shell.activeTab().url)
+    shell.closeTab(shell.activeId)
+    shell.closeTab(filler.id)
+
+    // Closing it
+    priv.win.close()
+    check('it closes cleanly', await until(() => !BrowserShell.all.has(priv), 3000))
+    await until(async () => (await pses.cookies.get({ name: 'who' })).length === 0, 3000)
+    equal('its cookies are gone', (await pses.cookies.get({ name: 'who' })).length, 0)
+    await wait(250)
+    equal('the download is off the list', require(path.join(REPO, 'src/main/downloads.js')).listDownloads(true).length, 0)
+    const fileKept = fs.readdirSync(dlDir).some((name) => name.includes(MARKER))
+    check('the downloaded file stays', fileKept)
+    app.setPath('downloads', realDownloads)
+    fs.rmSync(dlDir, { recursive: true, force: true })
+
+    const next = BrowserShell.create({ private: true, urls: [`${base}/next-private`] })
+    await loaded(next.activeTab().webContents)
+    check('the next private window starts with a new session', next.session !== pses)
+    equal('with nothing left over', (await next.session.cookies.get({ name: 'who' })).length, 0)
+    equal('including what pages stored', await inPage(next.activeTab().webContents, `localStorage.getItem('who')`), null)
+    next.win.close()
+    await until(() => !BrowserShell.all.has(next), 3000)
+
+    // The real test: search everything Glasswing wrote to disk for that page.
+    shell.createTab({ url: `${base}/${NORMAL_MARKER}` })
+    await wait(600)
+    BrowserShell.saveSession()
+    storeNow.flush()
+    await session.defaultSession.flushStorageData()
+    await session.defaultSession.cookies.flushStore()
+    await wait(300)
+    const found = { private: [], normal: [] }
+    const search = (folder) => {
+      for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+        const full = path.join(folder, entry.name)
+        if (entry.isDirectory()) search(full)
+        else {
+          try {
+            const data = fs.readFileSync(full)
+            if (data.includes(MARKER)) found.private.push(path.relative(profile, full))
+            if (data.includes(NORMAL_MARKER)) found.normal.push(path.relative(profile, full))
+          } catch {} // locked by the browser while it runs
+        }
+      }
+    }
+    search(profile)
+    check('this search does find a normal visit on disk', found.normal.length > 0)
+    equal('and finds nothing from the private one', found.private, [])
+    shell.closeTab(shell.activeId)
   }
 
   console.log('\nDamaged saved data')

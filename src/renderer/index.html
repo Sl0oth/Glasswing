@@ -42,6 +42,7 @@
         <div id="tabstrip" class="floating" style="--order: 1"></div>
 
         <div id="right-pill" class="pill floating toolbar-actions" style="--order: 2">
+          <span id="private-badge" title="This window doesn’t keep history, cookies or site data after it closes">Private</span>
           <button id="new-tab" class="icon-btn" title="New Tab" tabindex="-1">
             <svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10" /></svg>
           </button>
@@ -219,6 +220,10 @@
       </div>
 
       <div class="mp-sep"></div>
+      <button class="mp-item" data-action="new-private-window">
+        <svg viewBox="0 0 16 16"><path d="M2 8.5c1.8-2.6 3.8-3.9 6-3.9s4.2 1.3 6 3.9c-1.8 1.8-3.8 2.7-6 2.7s-4.2-.9-6-2.7z" /><circle cx="8" cy="8" r="1.7" /></svg>
+        <span>New Private Window</span><kbd>Ctrl+Shift+N</kbd>
+      </button>
       <button class="mp-item" data-action="toggle-split">
         <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M8 3v10" /></svg>
         <span id="mp-split-label">Split View</span><kbd>Ctrl+\</kbd>

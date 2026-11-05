@@ -20,7 +20,7 @@ function init(session) {
     async createTab(details) {
       const { BrowserWindow } = require('electron')
       const win = typeof details.windowId === 'number' ? BrowserWindow.fromId(details.windowId) : null
-      const shell = shellFor(win) ?? BrowserShell.lastFocused() ?? BrowserShell.create({ urls: [] })
+      const shell = shellFor(win) ?? BrowserShell.lastNormal() ?? BrowserShell.create({ urls: [] })
       const tab = shell.createTab({
         url: details.url,
         active: details.active !== false,

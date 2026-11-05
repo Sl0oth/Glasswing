@@ -17,8 +17,9 @@ function uniquePath(dir, filename) {
   return candidate
 }
 
-function snapshot() {
-  return downloads.map((d) => ({ ...d }))
+/** Private and normal windows each list only their own downloads. */
+function snapshot(isPrivate = false) {
+  return downloads.filter((d) => d.private === isPrivate).map((d) => ({ ...d }))
 }
 
 function broadcast() {
@@ -26,18 +27,18 @@ function broadcast() {
   broadcastTimer = setTimeout(() => {
     broadcastTimer = null
     const { BrowserShell } = require('./shell')
-    const list = snapshot()
-    for (const shell of BrowserShell.all) shell.sendEvent('downloads', list)
+    for (const shell of BrowserShell.all) shell.sendEvent('downloads', snapshot(shell.private))
   }, 150)
 }
 
-function setupDownloads(session) {
+function setupDownloads(session, { isPrivate = false } = {}) {
   session.on('will-download', (_event, item) => {
     const savePath = uniquePath(app.getPath('downloads'), item.getFilename())
     item.setSavePath(savePath)
 
     const entry = {
       id: nextId++,
+      private: isPrivate,
       filename: path.basename(savePath),
       path: savePath,
       url: item.getURL(),
@@ -64,9 +65,19 @@ function setupDownloads(session) {
     })
 
     const { BrowserShell } = require('./shell')
-    for (const shell of BrowserShell.all) shell.sendEvent('download-started', entry.filename)
+    for (const shell of BrowserShell.all) {
+      if (shell.private === isPrivate) shell.sendEvent('download-started', entry.filename)
+    }
     broadcast()
   })
+}
+
+/** The last private window closed. The files stay where they were saved; only the list forgets them. */
+function forgetPrivate() {
+  for (let i = downloads.length - 1; i >= 0; i--) {
+    if (downloads[i].private) downloads.splice(i, 1)
+  }
+  broadcast()
 }
 
 function find(id) {
@@ -91,4 +102,4 @@ const actions = {
   },
 }
 
-module.exports = { setupDownloads, downloadAction: (action, id) => actions[action]?.(id), listDownloads: snapshot }
+module.exports = { setupDownloads, forgetPrivate, downloadAction: (action, id) => actions[action]?.(id), listDownloads: snapshot }

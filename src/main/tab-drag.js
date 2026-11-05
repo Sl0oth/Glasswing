@@ -27,6 +27,7 @@ function landingFor(cursor) {
   const target = shellUnderCursor(source.constructor, cursor)
 
   if (!target) return multiple ? { kind: 'new-window' } : { kind: 'none' }
+  if (target.private !== source.private) return { kind: 'none' } // a page can't change sides, private or not
   if (target !== source) return { kind: 'merge', target }
   if (!multiple) return { kind: 'none' }
 
@@ -80,7 +81,7 @@ function createGhost(tab) {
     focusable: false,
     skipTaskbar: true,
     hasShadow: false,
-    webPreferences: { sandbox: true, contextIsolation: true },
+    webPreferences: { session: tab.shell.session, sandbox: true, contextIsolation: true }, // it shows the tab's icon
   })
   ghost.setAlwaysOnTop(true, 'pop-up-menu')
   ghost.setIgnoreMouseEvents(true)

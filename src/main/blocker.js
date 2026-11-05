@@ -9,6 +9,7 @@ const { Worker } = require('node:worker_threads')
 const fs = require('node:fs')
 const path = require('node:path')
 const store = require('./store')
+const privacy = require('./privacy')
 
 const KINDS = ['ads', 'combined']
 const REFRESH_AFTER_MS = 7 * 86_400_000
@@ -218,6 +219,14 @@ function isBlocked(result) {
   return Boolean(result?.match || result?.redirect)
 }
 
+/** A page's own address: tracking tags off, https if it's available. Forms stay as sent. */
+function pageRedirect({ url, method }) {
+  const settings = getSettings()
+  if (method !== 'GET' || isAllowedSite(url, settings) || isSafeguarded(url)) return {}
+  const redirectURL = privacy.saferUrl(url, { stripTrackers: settings.trackers })
+  return redirectURL ? { redirectURL } : {}
+}
+
 function decide(details) {
   const { webContents, resourceType, url } = details
   if (!webContents || webContents.isDestroyed()) return {}
@@ -227,7 +236,7 @@ function decide(details) {
     const entry = counts.get(webContents.id)
     if (entry) Object.assign(entry, { ads: 0, trackers: 0 })
     changed()
-    return {}
+    return pageRedirect(details)
   }
 
   // Only what websites load: not the browser's own pages, extensions, or downloads of extensions.
@@ -261,12 +270,18 @@ function decide(details) {
   return result.redirect ? { redirectURL: result.redirect.dataUrl } : { cancel: true }
 }
 
+/**
+ * A script in the filter lists reloads YouTube's player whenever the video looks stuck. Reloading makes
+ * it look stuck again, so for a signed-in viewer the video restarts about once a second and may never
+ * play. It's recognized by what it calls rather than its exact text, because the lists change weekly.
+ * The other scripts still remove the ads: tested on real videos with this one left out.
+ */
+function reloadsYouTubePlayer(code) {
+  return code.includes('loadVideoById') && code.includes('onSnackbarMessage')
+}
+
 /** Hides leftover ad boxes on the page. Uses the library's script and its message names. */
-function setupCosmetics(session) {
-  session.registerPreloadScript({
-    type: 'frame',
-    filePath: require.resolve('@ghostery/adblocker-electron-preload'),
-  })
+function setupCosmetics() {
   const activeEngines = (event) => {
     const settings = getSettings()
     const page = event.sender.getURL()
@@ -287,7 +302,9 @@ function setupCosmetics(session) {
       processId: event.processId,
       sender: {
         insertCSS: (...args) => sender.insertCSS(...args).catch(() => {}),
-        executeJavaScript: (code, ...args) => senderFrame?.executeJavaScript(`{\n${code}\n}`, ...args).catch(() => {}),
+        executeJavaScript: (code, ...args) => {
+          if (!reloadsYouTubePlayer(code)) senderFrame?.executeJavaScript(`{\n${code}\n}`, ...args).catch(() => {})
+        },
       },
     }
     for (const engine of activeEngines(event)) await engine.onInjectCosmeticFilters(corrected, url, message)
@@ -369,11 +386,8 @@ async function isStale() {
   }
 }
 
-/**
- * Starts blocking. Saved filter lists are in use by the time this finishes, so restored tabs are
- * covered from the start. Downloading happens in the background and never holds up the window.
- */
-async function init(session) {
+/** Blocks in this session, for its pages and everything they load. */
+function protect(session) {
   session.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
     try {
       callback(decide(details))
@@ -382,7 +396,19 @@ async function init(session) {
       callback({})
     }
   })
-  setupCosmetics(session)
+  session.registerPreloadScript({
+    type: 'frame',
+    filePath: require.resolve('@ghostery/adblocker-electron-preload'),
+  })
+}
+
+/**
+ * Starts blocking. Saved filter lists are in use by the time this finishes, so restored tabs are
+ * covered from the start. Downloading happens in the background and never holds up the window.
+ */
+async function init(session) {
+  protect(session)
+  setupCosmetics()
   compileCustomRules(getSettings().customRules)
 
   const loaded = await Promise.all(KINDS.map(readCached))
@@ -401,6 +427,8 @@ function useFilters({ ads, trackers }) {
 
 module.exports = {
   init,
+  protect,
+  reloadsYouTubePlayer,
   getSettings,
   set,
   toggleAll,

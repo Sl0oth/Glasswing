@@ -3,6 +3,7 @@ const { TRANSPARENT } = require('./constants')
 const { resolveInput, isInternal } = require('./url')
 const history = require('./history')
 const blocker = require('./blocker')
+const privacy = require('./privacy')
 
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5]
 const PAGE_BACKGROUND = '#ffffff'
@@ -51,7 +52,7 @@ class Tab {
     this.view = webContents
       ? new WebContentsView({ webContents })
       : new WebContentsView({
-          webPreferences: { sandbox: true, contextIsolation: true, plugins: true, spellcheck: true },
+          webPreferences: { session: shell.session, sandbox: true, contextIsolation: true, plugins: true, spellcheck: true },
         })
     this.webContents = this.view.webContents
     this.id = this.webContents.id
@@ -106,6 +107,32 @@ class Tab {
   recover() {
     const { url } = this
     if (url) this.loadURL(url)
+  }
+
+  /** Offers a way out of a page that's stopped answering. The card goes away by itself if it recovers. */
+  async handleFrozenPage() {
+    const { shell } = this
+    if (this.frozenPromptOpen || !shell.visibleTabs().includes(this)) return
+    this.frozenPromptOpen = true
+    let host = this.url
+    try {
+      host = new URL(host).host || host
+    } catch {}
+    const { button } = await require('./prompts').ask(shell, {
+      tag: `frozen-${this.id}`,
+      title: 'This page isn’t responding',
+      message: host,
+      detail: 'You can wait for it, or reload it. Reloading loses anything you haven’t saved on the page.',
+      buttons: [
+        { id: 'wait', label: 'Wait', style: 'secondary' },
+        { id: 'reload', label: 'Reload', style: 'primary' },
+      ],
+      cancelId: 'wait',
+    })
+    this.frozenPromptOpen = false
+    if (button !== 'reload' || this.webContents.isDestroyed()) return
+    this.restartingFrozenPage = true
+    this.webContents.forcefullyCrashRenderer() // a frozen page can't be asked to reload; see render-process-gone
   }
 
   /** The page's process died. Offer to bring it back, unless it isn't on screen yet. */
@@ -199,9 +226,12 @@ class Tab {
   bindEvents() {
     const wc = this.webContents
     const changed = () => this.shell.tabChanged(this)
+    const recordVisit = (url) => {
+      if (!this.shell.private) history.record(url, wc.getTitle())
+    }
 
     wc.on('page-title-updated', (_e, title) => {
-      history.updateTitle(wc.getURL(), title)
+      if (!this.shell.private) history.updateTitle(wc.getURL(), title)
       changed()
     })
     wc.on('page-favicon-updated', (_e, favicons) => {
@@ -217,20 +247,26 @@ class Tab {
       changed()
     })
     wc.on('did-navigate', (_e, url) => {
+      privacy.loaded(url)
       this.favicon = null
       this.applyBackground(url)
-      history.record(url, wc.getTitle())
+      recordVisit(url)
       this.captureEnded()
       changed()
     })
     wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
       if (!isMainFrame) return
-      history.record(url, wc.getTitle())
+      recordVisit(url)
       changed()
     })
     wc.on('did-fail-load', (_e, code, description, url, isMainFrame) => {
       // -3 is ERR_ABORTED: the user stopped the load or navigated away.
       if (!isMainFrame || code === -3 || isInternal(url)) return
+      const plainUrl = privacy.fallbackFor(url)
+      if (plainUrl) {
+        wc.loadURL(plainUrl).catch(() => {}) // failures come back through here
+        return
+      }
       this.view.setBackgroundColor('#111113')
       wc.executeJavaScript(errorPageScript(url, code, description)).catch(() => {})
     })
@@ -254,8 +290,15 @@ class Tab {
     wc.on('render-process-gone', (_e, details) => {
       this.captureEnded()
       changed()
+      if (this.restartingFrozenPage) {
+        this.restartingFrozenPage = false
+        this.recover()
+        return
+      }
       if (details.reason !== 'clean-exit' && !this.shell.closed && !this.shell.constructor.quitting) this.handleCrash()
     })
+    wc.on('unresponsive', () => this.handleFrozenPage())
+    wc.on('responsive', () => require('./prompts').closeTagged(`frozen-${this.id}`))
     wc.on('destroyed', () => this.shell.closeTab(this.id))
     // Websites can't send people to the browser's own pages.
     wc.on('will-navigate', (event) => {

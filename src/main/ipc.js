@@ -97,6 +97,7 @@ function localSuggestions(shell, text) {
 
   const tabs = []
   for (const s of BrowserShell.all) {
+    if (s.private !== shell.private) continue // neither kind of window gives away the other's tabs
     for (const id of s.order) {
       const tab = s.tabs.get(id)
       if (s === shell && id === shell.activeId) continue
@@ -113,7 +114,7 @@ function localSuggestions(shell, text) {
     .filter((f) => !tabUrls.has(f.url) && (f.title.toLowerCase().includes(query) || f.url.toLowerCase().includes(query)))
     .slice(0, 3)
 
-  const { results, completion } = history.query(query, 8)
+  const { results, completion } = shell.private ? { results: [], completion: null } : history.query(query, 8)
   const shown = new Set([...tabUrls, ...matchingFavorites.map((f) => f.url)])
   return {
     tabs: tabs.slice(0, 3),
@@ -156,7 +157,7 @@ function setupIpc() {
       case 'state':
         return shell.getState()
       case 'downloads':
-        return listDownloads()
+        return listDownloads(shell.private)
       case 'favorites':
         return favorites.list()
       case 'appearance':
@@ -169,7 +170,7 @@ function setupIpc() {
       case 'suggest-local':
         return localSuggestions(shell, String(args[0] ?? ''))
       case 'suggest-search':
-        return fetchSuggestions(String(args[0] ?? ''))
+        return shell.private ? [] : fetchSuggestions(String(args[0] ?? ''))
       case 'switch-to-tab': {
         const target = [...BrowserShell.all].find((s) => s.tabs.has(num(args[0])))
         target?.selectTab(num(args[0]))

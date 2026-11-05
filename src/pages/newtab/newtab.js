@@ -22,6 +22,13 @@ function tick() {
 }
 tick()
 
+fetch('/api/private')
+  .then((res) => (res.ok ? res.json() : false))
+  .then((isPrivate) => {
+    $('#private-note').hidden = !isPrivate
+  })
+  .catch(() => {})
+
 // ── Search ─────────────────────────────────────────────
 
 const input = $('#q')

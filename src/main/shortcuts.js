@@ -15,6 +15,7 @@ function handle(shell, input) {
   if (mod && input.shift && !input.alt) {
     switch (key) {
       case 't': return run(() => shell.reopenClosedTab())
+      case 'n': return run(() => shell.constructor.create({ private: true }))
       case 'r': return run(() => wc?.reloadIgnoringCache())
       case 'f': return run(() => shell.toggleFocusMode())
       case 'b': return run(() => require('./menus').toggleFavoritesBar())
@@ -32,7 +33,7 @@ function handle(shell, input) {
   if (mod && !input.shift && !input.alt) {
     switch (key) {
       case 't': return run(() => shell.createTab())
-      case 'n': return run(() => shell.constructor.create())
+      case 'n': return run(() => shell.newWindow())
       case 'w': return run(() => tab && shell.closeTab(tab.id))
       case 'l': case 'k': case 'e': return run(() => shell.focusAddressBar())
       case 'r': return run(() => wc?.reload())

@@ -10,7 +10,7 @@
 // on, the UI view has no height at all until it's needed, and the pointer is watched from here
 // rather than through an invisible strip that would sit on top of the page. It grows to the full
 // window while a dropdown is open.
-const { BrowserWindow, WebContentsView, screen } = require('electron')
+const { BrowserWindow, WebContentsView, screen, session } = require('electron')
 const path = require('node:path')
 const {
   APP_NAME,
@@ -69,6 +69,11 @@ class BrowserShell {
     return [...BrowserShell.all].at(-1) ?? null
   }
 
+  /** Where things from outside a private window belong: links from other apps, extensions, your data. */
+  static lastNormal() {
+    return [BrowserShell.focused, ...BrowserShell.recent, ...BrowserShell.all].find((s) => s && !s.private && BrowserShell.all.has(s)) ?? null
+  }
+
   static fromWindow(win) {
     for (const shell of BrowserShell.all) if (shell.win === win) return shell
     return null
@@ -89,11 +94,14 @@ class BrowserShell {
   }
 
   static saveSession() {
-    const windows = [...BrowserShell.all].map((shell) => shell.serialize())
-    store.set('session', { windows })
+    const windows = [...BrowserShell.all].filter((shell) => !shell.private).map((shell) => shell.serialize())
+    // Only private windows open: what's saved already is still the session to come back to.
+    if (windows.length) store.set('session', { windows })
   }
 
-  constructor({ urls, tabs, activeIndex = 0, bounds, maximized = false, splits, adoptTab, fullscreen } = {}) {
+  constructor({ urls, tabs, activeIndex = 0, bounds, maximized = false, splits, adoptTab, fullscreen, private: isPrivate = false } = {}) {
+    this.private = isPrivate
+    this.session = isPrivate ? require('./private-session').acquire() : session.defaultSession
     this.tabs = new Map()
     this.order = []
     this.activeId = null
@@ -128,7 +136,7 @@ class BrowserShell {
       minHeight: 320,
       show: false,
       fullscreen: fullscreen ?? this.appearance.fullscreen,
-      title: APP_NAME,
+      title: isPrivate ? `${APP_NAME} (Private)` : APP_NAME,
       icon: path.join(__dirname, '..', '..', 'assets', 'icon.png'),
       titleBarStyle: 'hidden',
       backgroundColor: process.platform === 'linux' ? '#161618' : TRANSPARENT,
@@ -147,8 +155,11 @@ class BrowserShell {
     })
     this.win.webContents.loadURL('glasswing://ui/backdrop.html')
 
+    // The toolbar draws each tab's icon, and fetching one is a visit to that site, so it shares the
+    // tabs' session: a private window's icons leave nothing behind in your normal browsing.
     this.ui = new WebContentsView({
       webPreferences: {
+        session: this.session,
         preload: path.join(__dirname, '..', 'preload', 'ui.js'),
         // The preload needs `require` for the extension toolbar (<browser-action-list>).
         sandbox: false,
@@ -162,7 +173,7 @@ class BrowserShell {
     this.ui.webContents.on('before-input-event', (event, input) => {
       if (require('./shortcuts').handle(this, input)) event.preventDefault()
     })
-    this.ui.webContents.loadURL('glasswing://ui/index.html')
+    this.ui.webContents.loadURL(`glasswing://ui/index.html${isPrivate ? '?private=1' : ''}`)
 
     BrowserShell.all.add(this)
     BrowserShell.focused = this
@@ -256,8 +267,11 @@ class BrowserShell {
       if (command === 'browser-backward') tab?.webContents.navigationHistory.goBack()
       if (command === 'browser-forward') tab?.webContents.navigationHistory.goForward()
     })
+    // Its backdrop page would otherwise replace the name that says this window is private.
+    if (this.private) win.on('page-title-updated', (event) => event.preventDefault())
     win.on('close', () => {
-      if (!BrowserShell.quitting && BrowserShell.all.size === 1) BrowserShell.saveSession()
+      const lastNormal = !this.private && [...BrowserShell.all].filter((s) => !s.private).length === 1
+      if (!BrowserShell.quitting && lastNormal) BrowserShell.saveSession()
     })
     win.on('closed', () => {
       this.closed = true
@@ -271,6 +285,7 @@ class BrowserShell {
       this.tabs.clear()
       for (const tab of tabs) tab.destroy()
       if (!this.ui.webContents.isDestroyed()) this.ui.webContents.close()
+      if (this.private && ![...BrowserShell.all].some((s) => s.private)) require('./private-session').end()
     })
   }
 
@@ -304,7 +319,8 @@ class BrowserShell {
     this.order.splice(at, 0, tab.id)
     this.keepSplitsTogether()
 
-    extensions.addTab(tab.webContents, this.win, this.activeTab()?.webContents)
+    // Extensions can read what's in a tab, so they don't get told about private ones.
+    if (!this.private) extensions.addTab(tab.webContents, this.win, this.activeTab()?.webContents)
 
     if (active || (this.activeId == null && !lazy)) this.selectTab(tab.id)
     else this.scheduleState()
@@ -323,7 +339,7 @@ class BrowserShell {
     this.syncViews()
     this.layout()
 
-    extensions.tabSelected(tab.webContents)
+    if (!this.private) extensions.tabSelected(tab.webContents)
 
     if (isNewTab(tab.url)) this.focusAddressBar()
     else if (this.win.isFocused()) tab.webContents.focus()
@@ -341,7 +357,7 @@ class BrowserShell {
     this.releaseTab(tab)
 
     try {
-      extensions.get()?.removeTab(tab.webContents)
+      if (!this.private) extensions.get()?.removeTab(tab.webContents)
     } catch {}
     tab.destroy()
 
@@ -414,7 +430,12 @@ class BrowserShell {
       x: Math.round(Math.max(area.x, Math.min(point.x - 120, area.x + area.width - size.width))),
       y: Math.round(Math.max(area.y, Math.min(point.y - 20, area.y + area.height - size.height))),
     }
-    return BrowserShell.create({ adoptTab: tab, bounds, fullscreen: false })
+    return this.newWindow({ adoptTab: tab, bounds, fullscreen: false })
+  }
+
+  /** Another window of the same kind as this one. */
+  newWindow(options) {
+    return BrowserShell.create({ ...options, private: this.private })
   }
 
   closeOtherTabs(id) {
@@ -555,7 +576,7 @@ class BrowserShell {
     if (this.findOpen) this.closeFind({ focusPage: false })
     this.lastActiveId = this.activeId
     this.activeId = tab.id
-    extensions.tabSelected(tab.webContents)
+    if (!this.private) extensions.tabSelected(tab.webContents)
     this.layout()
     this.scheduleState()
   }
@@ -961,6 +982,7 @@ class BrowserShell {
 
   getState() {
     return {
+      private: this.private,
       tabs: this.order.map((id) => this.tabs.get(id).state()),
       activeId: this.activeId,
       chromeHidden: this.isChromeHidden(),

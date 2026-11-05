@@ -13,6 +13,8 @@ const { setupGoogleSignIn } = require('./google-signin')
 const { restoreSessionCookies, flushAll } = require('./persistence')
 const extensions = require('./extensions')
 const blocker = require('./blocker')
+const { setupPrivacy } = require('./privacy')
+const { setupSiteLogin } = require('./site-login')
 const setup = require('./setup')
 const updater = require('./updater')
 const store = require('./store')
@@ -125,6 +127,8 @@ async function start() {
     type: 'frame',
     filePath: path.join(__dirname, '..', 'preload', 'capture.js'),
   })
+  setupPrivacy()
+  setupSiteLogin()
   // None of these is worth failing to open a window over.
   await blocker.init(ses).catch((err) => logError('Could not start ad and tracker blocking', err))
   // The rest of startup can carry on behind it, but no browser window opens until it's done with.
@@ -171,7 +175,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', (_event, argv) => {
     if (setup.focus() && starting) return
     const urls = urlsFromArgv(argv)
-    const shell = BrowserShell.lastFocused()
+    const shell = BrowserShell.lastNormal()
     if (!shell) return BrowserShell.create({ urls })
     for (const url of urls) shell.createTab({ url })
     shell.focus()

@@ -89,7 +89,8 @@ function pageContextMenu(tab, params) {
   if (params.linkURL) {
     items.push(
       { label: 'Open Link in New Tab', click: () => shell.createTab({ url: params.linkURL, active: false, openerId: tab.id }) },
-      { label: 'Open Link in New Window', click: () => shell.constructor.create({ urls: [params.linkURL] }) },
+      { label: 'Open Link in New Window', click: () => shell.newWindow({ urls: [params.linkURL] }) },
+      !shell.private && { label: 'Open Link in Private Window', click: () => shell.constructor.create({ urls: [params.linkURL], private: true }) },
       { label: 'Copy Link', click: () => clipboard.writeText(params.linkURL) },
     )
     sep()
@@ -142,7 +143,7 @@ function pageContextMenu(tab, params) {
   }
 
   try {
-    const extensionItems = extensions.get()?.getContextMenuItems(wc, params) ?? []
+    const extensionItems = shell.private ? [] : extensions.get()?.getContextMenuItems(wc, params) ?? []
     if (extensionItems.length) {
       items.push(...fromMenuItems(extensionItems))
       sep()
@@ -199,6 +200,7 @@ function tabContextMenu(shell, id, x, y) {
 
 /** Right-click on the + button: the last 10 pages visited, then a way into full history. */
 function newTabButtonMenu(shell, x, y) {
+  if (shell.private) return showMenu(shell, [{ label: 'Private windows don’t keep history', enabled: false }], { x, y })
   const recent = history.recent(10)
   const items = recent.map((entry) => {
     let host = entry.url
@@ -233,7 +235,7 @@ function favoriteContextMenu(shell, url, x, y) {
   if (!favorite) return
   showMenu(shell, [
     { label: 'Open in New Tab', click: () => shell.createTab({ url }) },
-    { label: 'Open in New Window', click: () => shell.constructor.create({ urls: [url] }) },
+    { label: 'Open in New Window', click: () => shell.newWindow({ urls: [url] }) },
     { label: 'Copy Address', click: () => clipboard.writeText(url) },
     { type: 'separator' },
     { label: 'Edit…', click: () => editFavorite(shell, favorite) },
@@ -304,7 +306,8 @@ function runAction(shell, action) {
   const tab = shell.activeTab()
   const actions = {
     'new-tab': () => shell.createTab(),
-    'new-window': () => shell.constructor.create(),
+    'new-window': () => shell.newWindow(),
+    'new-private-window': () => shell.constructor.create({ private: true }),
     find: () => tab && shell.openFind(),
     'zoom-in': () => tab?.zoom(1),
     'zoom-out': () => tab?.zoom(-1),
@@ -318,7 +321,7 @@ function runAction(shell, action) {
     protection: () => openOrSelect(shell, PROTECTION_URL),
     'reopen-tab': () => shell.reopenClosedTab(),
     extensions: () => openOrSelect(shell, EXTENSIONS_URL),
-    'web-store': () => shell.createTab({ url: WEB_STORE_URL }),
+    'web-store': () => (shell.private ? openOrSelect(shell, WEB_STORE_URL) : shell.createTab({ url: WEB_STORE_URL })),
     passwords: () => openOrSelect(shell, PASSWORDS_URL),
     history: () => openOrSelect(shell, HISTORY_URL),
     'downloads-folder': () => electronShell.openPath(app.getPath('downloads')),
@@ -332,7 +335,11 @@ function runAction(shell, action) {
   if (Object.hasOwn(actions, action)) actions[action]()
 }
 
-function openOrSelect(shell, url) {
+function openOrSelect(from, url) {
+  // These pages are about your normal browsing (its history, passwords and extensions), so that's where they open.
+  const shell = from.private ? from.constructor.lastNormal() : from
+  if (!shell) return from.constructor.create({ urls: [url] })
+  if (from.private) shell.focus()
   for (const id of shell.order) {
     if (shell.tabs.get(id).url.startsWith(url)) return shell.selectTab(id)
   }

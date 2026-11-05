@@ -10,7 +10,8 @@
 // on, the UI view has no height at all until it's needed, and the pointer is watched from here
 // rather than through an invisible strip that would sit on top of the page. It grows to the full
 // window while a dropdown is open.
-const { BrowserWindow, WebContentsView, screen, session } = require('electron')
+const { BrowserWindow, ClipboardItem, WebContentsView, app, clipboard, screen, session } = require('electron')
+const fs = require('node:fs')
 const path = require('node:path')
 const {
   APP_NAME,
@@ -41,6 +42,8 @@ const favorites = require('./favorites')
 const blocker = require('./blocker')
 const search = require('./search')
 const store = require('./store')
+const sleepingTabs = require('./sleeping-tabs')
+const { uniquePath } = require('./downloads')
 
 const isMac = process.platform === 'darwin'
 const isWin = process.platform === 'win32'
@@ -593,7 +596,9 @@ class BrowserShell {
     if (this.win.isDestroyed()) return
     const next = this.visibleTabs()
     for (const tab of this.shownTabs) {
-      if (!next.includes(tab)) this.win.contentView.removeChildView(tab.view)
+      if (next.includes(tab)) continue
+      this.win.contentView.removeChildView(tab.view)
+      tab.lastSeen = Date.now()
     }
     for (const tab of next) {
       this.win.contentView.addChildView(tab.view)
@@ -978,11 +983,53 @@ class BrowserShell {
     wc.findInPage(text, { forward, findNext: newSession })
   }
 
+  // ── Screenshots ───────────────────────────────────────────────────────
+
+  /** Saves what's on screen in the page to Downloads, and copies it to paste somewhere. */
+  async saveScreenshot() {
+    const tab = this.activeTab()
+    if (!tab || tab.webContents.isDestroyed()) return null
+    const announce = (text) => {
+      this.sendEvent('flash', text)
+      this.peek()
+    }
+    let file, png
+    try {
+      const image = await tab.webContents.capturePage()
+      if (image.isEmpty()) throw new Error('The page gave back an empty picture')
+      let site = 'Page'
+      try {
+        site = new URL(tab.url).hostname.replace(/^www\./, '') || site
+      } catch {}
+      // The time on your clock, not UTC.
+      const now = new Date()
+      const stamp = new Date(now - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 19).replace('T', ' ').replace(/:/g, '-')
+      const folder = app.getPath('downloads')
+      await fs.promises.mkdir(folder, { recursive: true })
+      file = uniquePath(folder, `Screenshot ${site} ${stamp}.png`)
+      png = image.toPNG()
+      await fs.promises.writeFile(file, png)
+    } catch (err) {
+      console.error('Could not save a screenshot:', err)
+      announce('Couldn’t save a screenshot of this page')
+      return null
+    }
+    try {
+      await clipboard.write([new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })])
+      announce('Screenshot saved to Downloads and copied')
+    } catch (err) {
+      console.error('Could not copy the screenshot:', err) // it's still saved, which is the main thing
+      announce('Screenshot saved to Downloads')
+    }
+    return file
+  }
+
   // ── UI messaging ──────────────────────────────────────────────────────
 
   getState() {
     return {
       private: this.private,
+      sleepTabs: sleepingTabs.enabled(),
       tabs: this.order.map((id) => this.tabs.get(id).state()),
       activeId: this.activeId,
       chromeHidden: this.isChromeHidden(),

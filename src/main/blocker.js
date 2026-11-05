@@ -16,7 +16,7 @@ const REFRESH_AFTER_MS = 7 * 86_400_000
 const BUILD_TIMEOUT_MS = 180_000
 const RETRY_MS = [60_000, 300_000, 1_800_000]
 const NOTIFY_MS = 300
-const DEFAULTS = { ads: true, trackers: true, allowedSites: [], customRules: '' }
+const DEFAULTS = { ads: true, trackers: true, secureDns: true, allowedSites: [], customRules: '' }
 const MAX_CUSTOM_RULES = 100_000
 
 // A false block costs most here: being locked out of an account or failing a payment, on pages where
@@ -65,6 +65,7 @@ function getSettings() {
   return {
     ads: typeof saved.ads === 'boolean' ? saved.ads : DEFAULTS.ads,
     trackers: typeof saved.trackers === 'boolean' ? saved.trackers : DEFAULTS.trackers,
+    secureDns: typeof saved.secureDns === 'boolean' ? saved.secureDns : DEFAULTS.secureDns,
     allowedSites: Array.isArray(saved.allowedSites) ? saved.allowedSites.filter((s) => typeof s === 'string') : [],
     customRules: typeof saved.customRules === 'string' ? saved.customRules : DEFAULTS.customRules,
   }
@@ -108,10 +109,14 @@ function update(partial) {
   changed()
 }
 
-function set({ ads, trackers }) {
+function set({ ads, trackers, secureDns }) {
   const partial = {}
   if (typeof ads === 'boolean') partial.ads = ads
   if (typeof trackers === 'boolean') partial.trackers = trackers
+  if (typeof secureDns === 'boolean') {
+    partial.secureDns = secureDns
+    privacy.applySecureDns(secureDns)
+  }
   update(partial)
 }
 
@@ -227,6 +232,10 @@ function pageRedirect({ url, method }) {
   return redirectURL ? { redirectURL } : {}
 }
 
+/** Pages that are the answer to a submitted form. Loading one again would send the form again. */
+const formPages = new WeakSet()
+const cameFromForm = (webContents) => formPages.has(webContents)
+
 function decide(details) {
   const { webContents, resourceType, url } = details
   if (!webContents || webContents.isDestroyed()) return {}
@@ -236,6 +245,8 @@ function decide(details) {
     const entry = counts.get(webContents.id)
     if (entry) Object.assign(entry, { ads: 0, trackers: 0 })
     changed()
+    if (details.method === 'GET') formPages.delete(webContents)
+    else formPages.add(webContents)
     return pageRedirect(details)
   }
 
@@ -429,6 +440,7 @@ module.exports = {
   init,
   protect,
   reloadsYouTubePlayer,
+  cameFromForm,
   getSettings,
   set,
   toggleAll,

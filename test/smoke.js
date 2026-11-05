@@ -78,6 +78,11 @@ const server = http.createServer((req, res) => {
     return res.end(page('Ads', '#fff', '<div class="ad-box" id="box">ad</div><div class="mine" id="mine">mine</div><script src="/banner-ad.js"></script><img src="/tracker-pixel.gif"><script src="/normal.js"></script>'))
   }
   if (url.pathname === '/media') return res.end(page('Media', '#fff', '<iframe id="inner" src="/media-frame" allow="camera;microphone"></iframe>'))
+  if (url.pathname === '/form-then-redirect' && req.method === 'POST') {
+    res.statusCode = 303
+    res.setHeader('location', '/after-form')
+    return res.end()
+  }
   if (url.pathname === '/dark') return res.end(page('Dark page', '#101014'))
   if (url.pathname === '/slow') return setTimeout(() => res.end(page('Slow page', '#fff')), 1200)
   if (url.pathname.startsWith('/login-')) {
@@ -170,6 +175,11 @@ async function run() {
   const realCursor = electron.screen.getCursorScreenPoint
   let cursor = null
   electron.screen.getCursorScreenPoint = () => cursor ?? realCursor.call(electron.screen)
+  // A real pointer resting on the window sends real mouse events, which end the pretend drags below.
+  const area = electron.screen.getPrimaryDisplay().workArea
+  if (testWindowStates && realCursor.call(electron.screen).x < 1340 && area.width >= 2700) {
+    win.setBounds({ x: area.x + area.width - 1320, y: 40, width: 1280, height: 800 })
+  }
   const moveCursor = (x, y) => {
     const b = win.getContentBounds()
     cursor = { x: b.x + x, y: b.y + y }
@@ -1143,6 +1153,190 @@ async function run() {
     const { reloadsYouTubePlayer } = require(path.join(REPO, 'src/main/blocker.js'))
     check('the filter list script that restarts videos doesn\'t run', reloadsYouTubePlayer('x(`e\\.loadVideoById\\(o%2Cs\\)`,`%22onSnackbarMessage%22`)'))
     check('scripts that remove ads still do', !reloadsYouTubePlayer('setConstant(`ytInitialPlayerResponse\\.playerAds`,`undefined`)'))
+  }
+
+  console.log('\nSleeping tabs')
+  {
+    const sleepingTabs = require(path.join(REPO, 'src/main/sleeping-tabs.js'))
+    const later = () => Date.now() + sleepingTabs.SLEEP_AFTER_MS + 1000
+    const uniqueHost = (n) => `${base.replace('127.0.0.1', `sleep${n}.localhost`)}`
+    const open = async (url) => {
+      const tab = shell.createTab({ url, active: false })
+      await until(() => !tab.webContents.isLoading(), 5000)
+      await wait(150)
+      return tab
+    }
+    check('it\'s on unless you turn it off', sleepingTabs.enabled())
+    const home = shell.activeTab()
+    const first = await open(`${uniqueHost(1)}/first`)
+    first.navigate(`${uniqueHost(1)}/second`)
+    await until(() => first.webContents.getURL().endsWith('/second'), 5000)
+    await until(() => !first.webContents.isLoading(), 5000)
+    equal('a tab you just left stays awake', await first.sleepIfUnused(), false)
+    equal('a long-unused tab goes to sleep', await first.sleepIfUnused(later()), true)
+    check('its page process is gone', await until(() => first.webContents.isCrashed(), 3000))
+    await wait(150)
+    equal('with no crash message', await ui(shell, `[...document.querySelectorAll('.prompt:not(.leaving) .prompt-title')].filter((t) => t.textContent.includes('stopped working')).length`), 0)
+    check('the tab keeps its address', first.url.endsWith('/second'), first.url)
+    equal('it looks asleep, not crashed', [first.state().sleeping, first.state().crashed], [true, false])
+    check('the tab strip dims it', await until(() => ui(shell, `Boolean(document.querySelector('.tab[data-id="${first.id}"].sleeping'))`)))
+    shell.selectTab(first.id)
+    check('selecting it wakes it', await until(() => !first.webContents.isCrashed() && !first.webContents.isLoading() && first.webContents.getTitle().includes('/second'), 6000), first.webContents.getTitle())
+    equal('and it isn\'t asleep any more', first.state().sleeping, false)
+    check('back still goes back', first.webContents.navigationHistory.canGoBack())
+    first.webContents.navigationHistory.goBack()
+    check('to the page before', await until(() => first.webContents.getURL().endsWith('/first'), 5000), first.webContents.getURL())
+    shell.selectTab(home.id)
+    await wait(100)
+    equal('a tab on screen never sleeps', await home.sleepIfUnused(later()), false)
+
+    const typed = await open(`${uniqueHost(2)}/typed`)
+    await typed.webContents.executeJavaScript(`document.body.insertAdjacentHTML('beforeend', '<textarea id=t></textarea>'); document.getElementById('t').value = 'half a message'; 1`, true)
+    equal('a tab with text typed in stays awake', await typed.sleepIfUnused(later()), false)
+    const noisy = await open(`${uniqueHost(3)}/noisy`)
+    const realAudible = noisy.webContents.isCurrentlyAudible
+    noisy.webContents.isCurrentlyAudible = () => true
+    equal('a tab playing sound stays awake', await noisy.sleepIfUnused(later()), false)
+    noisy.webContents.isCurrentlyAudible = realAudible
+    const store = require(path.join(REPO, 'src/main/store.js'))
+    const chatty = await open(`${uniqueHost(4)}/chatty`)
+    const chattyOrigin = new URL(chatty.url).origin
+    const permissions = store.get('permissions')
+    store.set('permissions', { ...permissions, [`${chattyOrigin} notifications`]: true })
+    equal('a site allowed to notify you stays awake', await chatty.sleepIfUnused(later()), false)
+    store.set('permissions', permissions)
+    const twin = await open(`${uniqueHost(5)}/twin`)
+    const realPid = twin.webContents.getOSProcessId
+    twin.webContents.getOSProcessId = () => home.webContents.getOSProcessId()
+    equal('a tab sharing its process with another stays awake', await twin.sleepIfUnused(later()), false)
+    twin.webContents.getOSProcessId = realPid
+    const lazy = shell.createTab({ url: `${uniqueHost(6)}/lazy`, active: false, lazy: true })
+    equal('a restored tab that hasn\'t loaded has nothing to give back', await lazy.sleepIfUnused(later()), false)
+
+    const paused = await open(`${uniqueHost(7)}/paused`)
+    await paused.webContents.executeJavaScript(`(() => { const v = document.createElement('video'); document.body.append(v); Object.defineProperty(v, 'currentTime', { value: 90 }); return 1 })()`)
+    equal('a tab holding your place in a video stays awake', await paused.sleepIfUnused(later()), false)
+    const framed = await open(`${uniqueHost(8)}/framed`)
+    await framed.webContents.executeJavaScript(`new Promise((done) => { const f = document.createElement('iframe'); f.onload = () => { f.contentDocument.body.innerHTML = '<textarea id=t></textarea>'; f.contentDocument.getElementById('t').value = 'half a message'; done(1) }; document.body.append(f) })`)
+    await wait(100)
+    equal('and so does one with text typed into a frame', await framed.sleepIfUnused(later()), false)
+    const emptyFrame = await open(`${uniqueHost(13)}/empty-frame`)
+    await emptyFrame.webContents.executeJavaScript(`new Promise((done) => { const f = document.createElement('iframe'); f.sandbox = ''; f.style.display = 'none'; f.onload = () => done(1); document.body.append(f) })`)
+    await wait(100)
+    equal('an empty hidden frame doesn\'t keep a tab awake', await emptyFrame.sleepIfUnused(later()), true)
+    const blocker = require(path.join(REPO, 'src/main/blocker.js'))
+    const submit = (tab, action) => tab.webContents.executeJavaScript(`(() => { const f = document.createElement('form'); f.method = 'post'; f.action = '${action}'; document.body.append(f); f.submit(); return 1 })()`)
+    const formAnswer = await open(`${uniqueHost(9)}/form`)
+    await submit(formAnswer, '/form-answer')
+    await until(() => formAnswer.webContents.getURL().endsWith('/form-answer') && !formAnswer.webContents.isLoading(), 5000)
+    check('the answer to a form is noticed', blocker.cameFromForm(formAnswer.webContents))
+    equal('and stays awake, since reloading would need the form sent again', await formAnswer.sleepIfUnused(later()), false)
+    const redirected = await open(`${uniqueHost(10)}/form`)
+    await submit(redirected, '/form-then-redirect')
+    await until(() => redirected.webContents.getURL().endsWith('/after-form') && !redirected.webContents.isLoading(), 5000)
+    check('a form that sends you to a normal page doesn\'t count', !blocker.cameFromForm(redirected.webContents))
+    equal('so that tab can sleep', await redirected.sleepIfUnused(later()), true)
+    await until(() => redirected.webContents.isCrashed(), 3000)
+    redirected.webContents.reload()
+    check('reloading a sleeping tab some other way wakes it', await until(() => !redirected.webContents.isCrashed() && !redirected.webContents.isLoading(), 5000))
+    equal('and it stops looking asleep', redirected.state().sleeping, false)
+
+    const movable = await open(`${uniqueHost(11)}/movable`)
+    equal('a tab about to move to a new window sleeps', await movable.sleepIfUnused(later()), true)
+    await until(() => movable.webContents.isCrashed(), 3000)
+    const elsewhere = shell.newWindow({ adoptTab: movable })
+    check('moving it to a new window wakes it', await until(() => !movable.webContents.isCrashed() && !movable.webContents.isLoading() && movable.webContents.getTitle().includes('/movable'), 6000), movable.webContents.getTitle())
+    elsewhere.win.close()
+    await until(() => elsewhere.closed, 3000)
+    const toClose = await open(`${uniqueHost(12)}/to-close`)
+    equal('a sleeping tab', await toClose.sleepIfUnused(later()), true)
+    await until(() => toClose.webContents.isCrashed(), 3000)
+    shell.closeTab(toClose.id)
+    check('can be closed', await until(() => !shell.tabs.has(toClose.id), 3000))
+    for (const tab of [first, typed, noisy, chatty, twin, lazy, paused, framed, emptyFrame, formAnswer, redirected]) shell.closeTab(tab.id)
+    await wait(100)
+
+    menus.runAction(shell, 'toggle-sleep-tabs')
+    equal('the ⋯ switch turns it off', sleepingTabs.enabled(), false)
+    await until(() => ui(shell, `true`))
+    menus.runAction(shell, 'toggle-sleep-tabs')
+    equal('and back on', sleepingTabs.enabled(), true)
+    check('the ⋯ panel has the switch', await ui(shell, `Boolean(document.getElementById('mp-sleep-tabs'))`))
+  }
+
+  console.log('\nEncrypted DNS')
+  {
+    const blocker = require(path.join(REPO, 'src/main/blocker.js'))
+    const real = app.configureHostResolver
+    const calls = []
+    app.configureHostResolver = (options) => (calls.push(options), real.call(app, options))
+    equal('it\'s on by default', blocker.getSettings().secureDns, true)
+    blocker.set({ secureDns: false })
+    equal('the switch turns it off', [blocker.getSettings().secureDns, calls.at(-1).secureDnsMode], [false, 'off'])
+    blocker.set({ secureDns: true })
+    equal('and back on, with a fallback', [blocker.getSettings().secureDns, calls.at(-1).secureDnsMode], [true, 'automatic'])
+    check('no Google servers', calls.at(-1).secureDnsServers.length > 0 && !calls.at(-1).secureDnsServers.some((s) => /google|8\.8\.8\.8|dns\.google/.test(s)))
+    app.configureHostResolver = real
+    const page = shell.createTab({ url: 'glasswing://protection/' })
+    await until(() => !page.webContents.isLoading())
+    await until(() => page.webContents.executeJavaScript(`document.getElementById('secureDns').classList.contains('on')`, true), 3000)
+    check('the Protection page shows it', await page.webContents.executeJavaScript(`document.getElementById('secureDns').classList.contains('on')`, true))
+    await page.webContents.executeJavaScript(`document.getElementById('secureDns').click(); 1`, true)
+    check('and can change it', await until(() => blocker.getSettings().secureDns === false))
+    blocker.set({ secureDns: true })
+    equal('turning it off keeps your other settings', [blocker.getSettings().ads, blocker.getSettings().trackers], [true, true])
+    shell.closeTab(page.id)
+  }
+
+  console.log('\nPicture in Picture and screenshots')
+  {
+    const tab = shell.createTab({ url: `${base}/no-video` })
+    await until(() => !tab.webContents.isLoading(), 5000)
+    equal('with no video it says so', await tab.togglePictureInPicture(), 'none')
+    check('the ⋯ panel has both', await ui(shell, `Boolean(document.querySelector('[data-action="picture-in-picture"]') && document.querySelector('[data-action="screenshot"]'))`))
+    if (testWindowStates) {
+      await tab.webContents.executeJavaScript(`(() => {
+        const c = document.createElement('canvas'); c.width = 320; c.height = 180; c.getContext('2d').fillRect(0, 0, 320, 180)
+        const v = document.createElement('video'); v.id = 'v'; v.muted = true; v.srcObject = c.captureStream(5); document.body.append(v); return v.play().then(() => 1)
+      })()`, true)
+      await wait(300)
+      equal('a video pops out', await tab.togglePictureInPicture(), 'open')
+      check('and the page knows', await tab.webContents.executeJavaScript(`Boolean(document.pictureInPictureElement)`, true))
+      equal('the same keys put it back', await tab.togglePictureInPicture(), 'closed')
+      const shots = path.join(profile, 'shots-test')
+      fs.mkdirSync(shots)
+      const realDownloads = app.getPath('downloads')
+      app.setPath('downloads', shots)
+      clipboard.clear()
+      const file = await shell.saveScreenshot()
+      check('a screenshot is saved', Boolean(file) && fs.statSync(file).size > 500 && file.endsWith('.png'), String(file))
+      check('named after the site', Boolean(file) && path.basename(file).includes('127.0.0.1'), String(file))
+      check('and copied', await clipboard.has('image/png'))
+      const stamp = path.basename(file).match(/(\d{4})-(\d\d)-(\d\d) (\d\d)-/)
+      equal('named with the time on your clock', Number(stamp?.[4]), new Date().getHours())
+      const blockedFolder = path.join(shots, 'a-file-not-a-folder')
+      fs.writeFileSync(blockedFolder, '')
+      app.setPath('downloads', blockedFolder)
+      equal('if it can\'t be saved, nothing breaks', await shell.saveScreenshot(), null)
+      const repeats = []
+      const realSave = shell.saveScreenshot
+      shell.saveScreenshot = () => repeats.push('shot')
+      const keys = require(path.join(REPO, 'src/main/shortcuts.js'))
+      keys.handle(shell, { type: 'keyDown', key: 'S', control: true, shift: true, alt: false, meta: false, isAutoRepeat: false })
+      keys.handle(shell, { type: 'keyDown', key: 'S', control: true, shift: true, alt: false, meta: false, isAutoRepeat: true })
+      shell.saveScreenshot = realSave
+      equal('holding the keys takes one screenshot', repeats.length, 1)
+      app.setPath('downloads', realDownloads)
+      fs.rmSync(shots, { recursive: true, force: true })
+    }
+    const dead = shell.createTab({ url: `${base}/dead`, active: false })
+    await until(() => !dead.webContents.isLoading(), 5000)
+    dead.webContents.forcefullyCrashRenderer()
+    await until(() => dead.webContents.isCrashed(), 3000)
+    equal('a crashed page says there\'s no video', await dead.togglePictureInPicture(), 'none')
+    shell.closeTab(dead.id)
+    shell.closeTab(tab.id)
+    await wait(100)
   }
 
   console.log('\nPrivate windows')

@@ -407,6 +407,12 @@ browser-action-list::part(badge) {
   display: none;
 }
 
+/* Asleep: it reloads when selected. */
+.tab.sleeping > .tab-icon,
+.tab.sleeping > .tab-title {
+  opacity: 0.5;
+}
+
 .tab-icon {
   width: 16px;
   height: 16px;

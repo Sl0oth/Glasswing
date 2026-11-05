@@ -13,7 +13,7 @@ const { setupGoogleSignIn } = require('./google-signin')
 const { restoreSessionCookies, flushAll } = require('./persistence')
 const extensions = require('./extensions')
 const blocker = require('./blocker')
-const { setupPrivacy } = require('./privacy')
+const { setupPrivacy, applySecureDns } = require('./privacy')
 const { setupSiteLogin } = require('./site-login')
 const setup = require('./setup')
 const updater = require('./updater')
@@ -128,6 +128,7 @@ async function start() {
     filePath: path.join(__dirname, '..', 'preload', 'capture.js'),
   })
   setupPrivacy()
+  applySecureDns(blocker.getSettings().secureDns)
   setupSiteLogin()
   // None of these is worth failing to open a window over.
   await blocker.init(ses).catch((err) => logError('Could not start ad and tracker blocking', err))
@@ -153,6 +154,7 @@ async function start() {
   }
   starting = false
   updater.start()
+  require('./sleeping-tabs').start()
 }
 
 // ── Bootstrap ──────────────────────────────────────────────────────────

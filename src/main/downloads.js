@@ -102,4 +102,4 @@ const actions = {
   },
 }
 
-module.exports = { setupDownloads, forgetPrivate, downloadAction: (action, id) => actions[action]?.(id), listDownloads: snapshot }
+module.exports = { setupDownloads, forgetPrivate, uniquePath, downloadAction: (action, id) => actions[action]?.(id), listDownloads: snapshot }

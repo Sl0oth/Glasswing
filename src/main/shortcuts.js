@@ -16,6 +16,7 @@ function handle(shell, input) {
     switch (key) {
       case 't': return run(() => shell.reopenClosedTab())
       case 'n': return run(() => shell.constructor.create({ private: true }))
+      case 's': return run(() => input.isAutoRepeat || shell.saveScreenshot()) // holding the keys takes one
       case 'r': return run(() => wc?.reloadIgnoringCache())
       case 'f': return run(() => shell.toggleFocusMode())
       case 'b': return run(() => require('./menus').toggleFavoritesBar())
@@ -63,6 +64,7 @@ function handle(shell, input) {
       case 'ArrowLeft': return run(() => wc?.navigationHistory.goBack())
       case 'ArrowRight': return run(() => wc?.navigationHistory.goForward())
       case 'Home': return run(() => tab?.loadURL(NEWTAB_URL))
+      case 'p': return run(() => input.isAutoRepeat || tab?.togglePictureInPicture())
       case 'd': return isMac ? false : run(() => shell.focusAddressBar())
     }
   }

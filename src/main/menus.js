@@ -106,6 +106,11 @@ function pageContextMenu(tab, params) {
     sep()
   }
 
+  if (params.mediaType === 'video') {
+    items.push({ label: 'Picture in Picture', ...accel('Alt+P'), click: () => tab.togglePictureInPicture() })
+    sep()
+  }
+
   if (params.isEditable) {
     const f = params.editFlags
     items.push(
@@ -308,6 +313,9 @@ function runAction(shell, action) {
     'new-tab': () => shell.createTab(),
     'new-window': () => shell.newWindow(),
     'new-private-window': () => shell.constructor.create({ private: true }),
+    'picture-in-picture': () => tab?.togglePictureInPicture(),
+    screenshot: () => shell.saveScreenshot(),
+    'toggle-sleep-tabs': () => require('./sleeping-tabs').setEnabled(!require('./sleeping-tabs').enabled()),
     find: () => tab && shell.openFind(),
     'zoom-in': () => tab?.zoom(1),
     'zoom-out': () => tab?.zoom(-1),

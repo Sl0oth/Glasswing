@@ -204,6 +204,7 @@ function updateTabEl(el, tab) {
   const isActive = tab.id === state.activeId
   el.classList.toggle('active', isActive)
   el.classList.toggle('loading', tab.loading)
+  el.classList.toggle('sleeping', Boolean(tab.sleeping))
   el.classList.toggle('split-left', tab.split === 'left')
   el.classList.toggle('split-right', tab.split === 'right')
   el.classList.toggle('split-visible', tab.splitPartner === state.activeId)
@@ -1285,7 +1286,7 @@ const PANEL_UI_ACTIONS = {
   customize: () => toggleCustomize(true),
 }
 // Actions you'd likely repeat keep the panel open.
-const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-fullscreen'])
+const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-fullscreen'])
 
 function syncMainPanel() {
   const tab = activeTab()
@@ -1294,6 +1295,7 @@ function syncMainPanel() {
   $('#mp-fullscreen').classList.toggle('on', Boolean(state.fullscreen))
   $('#mp-favbar').classList.toggle('on', Boolean(state.favoritesBarEnabled))
   $('#mp-protection').classList.toggle('on', Boolean(state.protection?.ads || state.protection?.trackers))
+  $('#mp-sleep-tabs').classList.toggle('on', Boolean(state.sleepTabs))
   $('#mp-split-label').textContent = tab?.split ? 'Separate Split View' : 'Split View'
   $('#mp-favorite-label').textContent = `${favoriteUrls.has(tab?.url) ? 'Remove from' : 'Add to'} Favorites`
   $('[data-action="favorite"]', mainPanel).disabled = !/^https?:/.test(tab?.url ?? '')

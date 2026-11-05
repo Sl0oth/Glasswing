@@ -61,6 +61,18 @@ function loaded(url) {
   }
 }
 
+// Non-profit Quad9 first, then Cloudflare. Neither is Google, and neither is run by your network.
+const SECURE_DNS_SERVERS = ['https://dns.quad9.net/dns-query', 'https://cloudflare-dns.com/dns-query']
+
+/**
+ * Looks up site names over an encrypted connection, so your network can't read them from the lookups.
+ * "Automatic" falls back to normal lookups when these servers can't be reached, as on some school
+ * networks, so sites don't stop loading. Your network can still see which servers you connect to.
+ */
+function applySecureDns(on) {
+  app.configureHostResolver({ secureDnsMode: on ? 'automatic' : 'off', secureDnsServers: SECURE_DNS_SERVERS })
+}
+
 /** Keeps websites from reading your computer's address on your own network through WebRTC. Calls still work. */
 function setupPrivacy() {
   app.on('web-contents-created', (_event, webContents) => {
@@ -68,4 +80,4 @@ function setupPrivacy() {
   })
 }
 
-module.exports = { setupPrivacy, saferUrl, fallbackFor, loaded }
+module.exports = { setupPrivacy, applySecureDns, saferUrl, fallbackFor, loaded }

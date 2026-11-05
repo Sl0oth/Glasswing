@@ -115,6 +115,13 @@ just says it couldn't reach the server.
   - Passwords aren't filled in or saved, site permissions aren't remembered, and extensions are off. Blocking still works.
   - Downloaded files and favorites you add stay. Websites and your network can still see what you do.
   - A tab can't be dragged between a private window and a normal one.
+- **Sleeping tabs**: a tab you haven't used for 30 minutes gives back its memory, looks dimmed, and reloads when
+  selected. Tabs playing sound, partway through a video, using the camera or mic, with text typed in, showing the
+  result of a form, or from sites you've let send notifications stay awake. There's a switch in the ⋯ panel.
+- **Encrypted DNS**: site names are looked up through Quad9 or Cloudflare over an encrypted connection, so your
+  network can't read them from the lookups. Normal lookups are the fallback. There's a switch on the Protection page.
+- **Picture in Picture**: Alt+P, the ⋯ panel, or right-click a video pops it into a small window that stays on top.
+- **Screenshots**: Ctrl+Shift+S or the ⋯ panel saves what's on screen in the page to Downloads and copies it.
 - **Problems**: errors are written to `glasswing.log` in the profile folder rather than shown as
   dialogs. A page that crashes offers a Reload card, and a background tab reloads when you select it.
 - **Prompts and menus** (save password, site permissions, add extension, right-click, ⋯) are drawn
@@ -131,6 +138,8 @@ just says it couldn't reach the server.
 | --- | --- |
 | New tab / window | Ctrl+T / Ctrl+N |
 | New private window | Ctrl+Shift+N |
+| Picture in Picture | Alt+P |
+| Screenshot | Ctrl+Shift+S |
 | Close tab / reopen closed | Ctrl+W / Ctrl+Shift+T |
 | Search / address bar | Ctrl+K, Ctrl+L, Ctrl+E, Alt+D, F6 |
 | History | Ctrl+H (or right-click **+** for the last 10 sites) |

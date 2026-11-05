@@ -37,6 +37,7 @@ function siteCard(site) {
 function render() {
   $('ads').classList.toggle('on', data.ads)
   $('trackers').classList.toggle('on', data.trackers)
+  $('secureDns').classList.toggle('on', data.secureDns)
   $('total').textContent = data.blockedTotal
     ? `${data.blockedTotal.toLocaleString()} ads and trackers blocked so far`
     : 'Blocks ads and trackers on every site, except the ones you allow.'
@@ -53,7 +54,7 @@ async function load() {
   render()
 }
 
-for (const key of ['ads', 'trackers']) {
+for (const key of ['ads', 'trackers', 'secureDns']) {
   $(key).addEventListener('click', async () => {
     data = await send('/api/protection', 'PUT', { [key]: !data[key] })
     render()

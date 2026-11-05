@@ -1,7 +1,7 @@
 {
   "name": "glasswing",
   "productName": "Glasswing",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "A minimalist, dark, see-through browser with floating controls, split view, built-in ad and tracker blocking, and Chrome extension support.",
   "main": "src/main/index.js",
   "scripts": {

@@ -1,4 +1,4 @@
-const { WebContentsView } = require('electron')
+const { WebContentsView, webContents: allWebContents } = require('electron')
 const { TRANSPARENT } = require('./constants')
 const { resolveInput, isInternal } = require('./url')
 const history = require('./history')
@@ -45,6 +45,23 @@ function errorPageScript(url, code, description) {
  */
 const noCapture = () => ({ page: { audio: false, video: false }, frames: { audio: false, video: false } })
 
+/** True if a page might lose something by reloading: text typed in, your place in a video, or it asks before you leave. */
+const WOULD_LOSE_SOMETHING = `(() => {
+  const fields = document.querySelectorAll('textarea, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button])')
+  const startedMedia = [...document.querySelectorAll('video, audio')].some((m) => !m.paused || m.currentTime > 0)
+  return startedMedia || Boolean(document.pictureInPictureElement) || Boolean(window.onbeforeunload) || Boolean(document.activeElement?.isContentEditable) || [...fields].some((f) => f.value !== f.defaultValue)
+})()`
+
+/** Pops the biggest video on the page out into its own small window, or puts it back. */
+const TOGGLE_PICTURE_IN_PICTURE = `(() => {
+  if (document.pictureInPictureElement) return document.exitPictureInPicture().then(() => 'closed')
+  const area = (v) => v.clientWidth * v.clientHeight
+  const video = [...document.querySelectorAll('video')].filter((v) => v.readyState > 0).sort((a, b) => area(b) - area(a))[0]
+  if (!video) return 'none'
+  video.disablePictureInPicture = false
+  return video.requestPictureInPicture().then(() => 'open')
+})()`
+
 class Tab {
   constructor(shell, { url, webContents, title, lazy = false, openerId = null } = {}) {
     this.shell = shell
@@ -66,6 +83,8 @@ class Tab {
     this.crashPromptOpen = false
     this.split = null // { left, right, ratio }, shared with the tab on the other side
     this.capture = noCapture()
+    this.sleeping = false
+    this.lastSeen = Date.now()
 
     this.view.setBackgroundColor(TRANSPARENT)
     this.bindEvents()
@@ -93,6 +112,7 @@ class Tab {
   loadURL(url) {
     this.pendingUrl = null
     this.pendingTitle = null
+    this.sleeping = false
     this.applyBackground(url)
     // Load failures are reported through `did-fail-load`.
     this.webContents.loadURL(url).catch(() => {})
@@ -101,7 +121,63 @@ class Tab {
   /** Lazily restored tabs load once they're first shown; crashed background tabs recover the same way. */
   ensureLoaded() {
     if (this.pendingUrl) this.loadURL(this.pendingUrl)
+    else if (this.sleeping) this.wake()
     else if (this.webContents.isCrashed()) this.recover()
+  }
+
+  /** Gives back the page's memory by ending its process. Its address and back/forward list stay. */
+  async sleepIfUnused(now = Date.now()) {
+    const { SLEEP_AFTER_MS } = require('./sleeping-tabs')
+    const wc = this.webContents
+    if (this.sleeping || this.pendingUrl || wc.isDestroyed() || wc.isCrashed() || wc.isLoading()) return false
+    if (now - this.lastSeen < SLEEP_AFTER_MS || this.shell.visibleTabs().includes(this)) return false
+    if (!/^https?:/.test(this.url) || wc.isCurrentlyAudible() || wc.isDevToolsOpened()) return false
+    if (this.usingCamera || this.usingMicrophone || this.hasNotifications()) return false
+    // Ending a process ends everything in it, and a page may be sharing one with others.
+    const pid = wc.getOSProcessId()
+    if (allWebContents.getAllWebContents().some((other) => other !== wc && !other.isDestroyed() && other.getOSProcessId() === pid)) return false
+
+    // Waking reloads, and reloading a page that came from a form would send the form again.
+    if (blocker.cameFromForm(wc)) return false
+
+    // A page that can't answer stays awake. An empty hidden frame, which can't either, has nothing to lose.
+    const answers = Promise.all(wc.mainFrame.framesInSubtree.map((frame) => frame.executeJavaScript(WOULD_LOSE_SOMETHING).catch(() => !frame.parent)))
+    const wouldLose = await Promise.race([
+      answers.then((each) => each.some(Boolean)),
+      new Promise((resolve) => setTimeout(resolve, 1500, true)), // not answering: leave it alone
+    ])
+    // That took a moment, and it may have been selected or started loading in the meantime.
+    if (wouldLose || wc.isDestroyed() || wc.isLoading() || this.shell.visibleTabs().includes(this)) return false
+    this.sleeping = true
+    wc.forcefullyCrashRenderer()
+    return true
+  }
+
+  wake() {
+    this.sleeping = false
+    this.webContents.reload()
+    this.shell.tabChanged(this)
+  }
+
+  /** Sites you've let notify you have to stay running, or the notifications would stop. */
+  hasNotifications() {
+    try {
+      return require('./store').get('permissions')?.[`${new URL(this.url).origin} notifications`] === true
+    } catch {
+      return false
+    }
+  }
+
+  async togglePictureInPicture() {
+    const wc = this.webContents
+    const frames = wc.isDestroyed() || wc.isCrashed() ? [] : wc.mainFrame.framesInSubtree
+    for (const frame of frames) {
+      const result = await frame.executeJavaScript(TOGGLE_PICTURE_IN_PICTURE, true).catch(() => 'none')
+      if (result !== 'none') return result
+    }
+    this.shell.sendEvent('flash', 'There’s no video playing here')
+    this.shell.peek()
+    return 'none'
   }
 
   recover() {
@@ -240,6 +316,7 @@ class Tab {
     })
     wc.on('did-start-loading', () => {
       this.loading = true
+      this.sleeping = false // reloaded some other way, as from the tab's menu
       changed()
     })
     wc.on('did-stop-loading', () => {
@@ -290,6 +367,7 @@ class Tab {
     wc.on('render-process-gone', (_e, details) => {
       this.captureEnded()
       changed()
+      if (this.sleeping) return // on purpose: see sleepIfUnused
       if (this.restartingFrozenPage) {
         this.restartingFrozenPage = false
         this.recover()
@@ -344,7 +422,8 @@ class Tab {
       camera: alive && this.usingCamera,
       microphone: alive && this.usingMicrophone,
       zoom: alive ? Math.round(wc.getZoomFactor() * 100) : 100,
-      crashed: alive && wc.isCrashed(),
+      crashed: alive && wc.isCrashed() && !this.sleeping,
+      sleeping: this.sleeping,
       blocked: blocker.countsFor(this.id),
       split: this.split ? (this.split.left === this.id ? 'left' : 'right') : null,
       splitPartner: this.split ? (this.split.left === this.id ? this.split.right : this.split.left) : null,

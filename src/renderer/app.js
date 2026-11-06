@@ -14,14 +14,19 @@ const ICONS = {
   close: '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
   speaker: '<svg viewBox="0 0 16 16"><path d="M2.5 6.2h2.3L8 3.5v9L4.8 9.8H2.5z"/><path d="M10.6 5.9a3 3 0 0 1 0 4.2M12.5 4.1a5.6 5.6 0 0 1 0 7.8"/></svg>',
   muted: '<svg viewBox="0 0 16 16"><path d="M2.5 6.2h2.3L8 3.5v9L4.8 9.8H2.5z"/><path d="M10.8 6.4l3 3M13.8 6.4l-3 3"/></svg>',
+  camera: '<svg viewBox="0 0 16 16"><rect x="1.8" y="4.2" width="8.6" height="7.6" rx="1.8"/><path d="M10.4 7.2l3.8-2.2v6l-3.8-2.2"/></svg>',
+  microphone: '<svg viewBox="0 0 16 16"><rect x="5.9" y="1.8" width="4.2" height="7.6" rx="2.1"/><path d="M3.4 7.8a4.6 4.6 0 0 0 9.2 0M8 12.4v2"/></svg>',
   folder: '<svg viewBox="0 0 16 16"><path d="M2.5 4.5h3.8l1.5 1.5h5.7v6.5h-11z"/></svg>',
   check: '<svg viewBox="0 0 16 16"><path d="M3.5 8.5l3 3 6-7"/></svg>',
   key: '<svg viewBox="0 0 16 16"><circle cx="5.5" cy="10.5" r="2.75"/><path d="M7.5 8.5L13 3M11 5l1.5 1.5M9.5 6.5L11 8"/></svg>',
   crashed: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.75"/><path d="M6 6.2v.01M10 6.2v.01M5.6 11c1.4-1.3 3.4-1.3 4.8 0"/></svg>',
+  shield: '<svg viewBox="0 0 16 16"><path d="M8 1.8l5 1.9v3.8c0 3.2-2.1 5.6-5 6.7-2.9-1.1-5-3.5-5-6.7V3.7z"/></svg>',
+  star: '<svg viewBox="0 0 16 16"><path d="M8 2.5l1.7 3.5 3.8.5-2.8 2.6.7 3.8L8 11.1l-3.4 1.8.7-3.8-2.8-2.6 3.8-.5z"/></svg>',
 }
 
 const FAVICON_SERVICE = (host) => `https://icons.duckduckgo.com/ip3/${encodeURIComponent(host)}.ico`
-const PLACEHOLDER = 'Search DuckDuckGo or enter website name'
+const searchName = () => state.search?.name ?? 'the web'
+const placeholder = () => `Search ${searchName()} or enter website name`
 
 document.body.classList.add(`platform-${api.platform}`)
 
@@ -33,21 +38,30 @@ const loadingBefore = new Map()
 let editing = false
 let flashText = null
 let dragState = null
+let tabDragOut = false // a tab has been pulled out of the strip
 let menuOpen = false
 const prompts = new Map() // id → { data, el }
 
+const TAB_PULL_MARGIN = 14 // how far past the tab strip a tab goes before it's been pulled out
 const strip = $('#tabstrip')
+const dragZones = $('#drag-zones')
+const dropMarker = $('#drop-marker')
 const address = $('#address-template').content.firstElementChild.cloneNode(true)
 const addressInput = $('#address-input', address)
 const addressText = $('#address-text', address)
 const addressIcon = $('#address-icon', address)
+const addressCapture = $('#address-capture', address)
+const addressAudio = $('#address-audio', address)
 const zoomPill = $('#zoom-pill', address)
 const reloadBtn = $('#reload', address)
+const starBtn = $('#star', address)
 const suggestionsEl = $('#suggestions')
 const downloadsPanel = $('#downloads-panel')
 const customizePanel = $('#customize-panel')
 const mainPanel = $('#main-panel')
 const downloadsBtn = $('#downloads-btn')
+const shieldPanel = $('#shield-panel')
+const shieldBtn = $('#shield-btn')
 const findInput = $('#find-input')
 const findCount = $('#find-count')
 
@@ -70,10 +84,10 @@ function parse(url) {
 
 function searchQueryOf(url) {
   const u = parse(url)
-  if (u && /(^|\.)duckduckgo\.com$/.test(u.hostname) && u.pathname === '/' && u.searchParams.get('q')) {
-    return u.searchParams.get('q')
-  }
-  return null
+  const engine = state.search
+  if (!u || !engine) return null
+  const onEngine = u.hostname === engine.host || u.hostname.endsWith(`.${engine.host}`)
+  return (onEngine && u.pathname === engine.path && u.searchParams.get(engine.param)) || null
 }
 
 function displayInfo(tab) {
@@ -136,6 +150,7 @@ function createTabEl(id) {
     <button class="tab-close" title="Close Tab" tabindex="-1">${ICONS.close}</button>
     <span class="tab-icon"></span>
     <span class="tab-title"></span>
+    <span class="capture" hidden></span>
     <button class="tab-audio" tabindex="-1" hidden></button>`
 
   const closeBtn = $('.tab-close', el)
@@ -164,10 +179,35 @@ function createTabEl(id) {
   return el
 }
 
+/** The speaker: on a background tab's button, or in the address field for the active one. */
+function updateAudio(button, tab) {
+  const show = tab.audible || tab.muted
+  button.hidden = !show
+  if (!show) return
+  if (button.dataset.state !== String(tab.muted)) {
+    button.innerHTML = tab.muted ? ICONS.muted : ICONS.speaker
+    button.dataset.state = String(tab.muted)
+  }
+  button.title = tab.muted ? 'Unmute Tab' : 'Mute Tab'
+}
+
+function updateCapture(container, tab) {
+  const key = `${tab.camera}${tab.microphone}`
+  container.hidden = !tab.camera && !tab.microphone
+  if (container.dataset.state === key) return
+  container.dataset.state = key
+  container.innerHTML = (tab.camera ? ICONS.camera : '') + (tab.microphone ? ICONS.microphone : '')
+  container.title = tab.camera && tab.microphone ? 'Using your camera and microphone' : tab.camera ? 'Using your camera' : 'Using your microphone'
+}
+
 function updateTabEl(el, tab) {
   const isActive = tab.id === state.activeId
   el.classList.toggle('active', isActive)
   el.classList.toggle('loading', tab.loading)
+  el.classList.toggle('sleeping', Boolean(tab.sleeping))
+  el.classList.toggle('split-left', tab.split === 'left')
+  el.classList.toggle('split-right', tab.split === 'right')
+  el.classList.toggle('split-visible', tab.splitPartner === state.activeId)
   el.title = isActive ? '' : tab.title
 
   const title = $('.tab-title', el)
@@ -178,17 +218,8 @@ function updateTabEl(el, tab) {
   if (tab.crashed) setIcon(icon, { fallback: ICONS.crashed })
   else setIcon(icon, { favicon: tab.favicon })
 
-  const audio = $('.tab-audio', el)
-  const showAudio = tab.audible || tab.muted
-  audio.hidden = !showAudio
-  if (showAudio) {
-    const markup = tab.muted ? ICONS.muted : ICONS.speaker
-    if (audio.dataset.state !== String(tab.muted)) {
-      audio.innerHTML = markup
-      audio.dataset.state = String(tab.muted)
-    }
-    audio.title = tab.muted ? 'Unmute Tab' : 'Mute Tab'
-  }
+  updateCapture($('.capture', el), tab)
+  updateAudio($('.tab-audio', el), tab)
 
   // Progress bar completion flourish.
   const wasLoading = loadingBefore.get(tab.id)
@@ -211,10 +242,12 @@ function onTabMouseDown(e, id, el) {
   const wasActive = id === state.activeId
   if (wasActive && editing) return // let the input handle caret/selection
   e.preventDefault()
-  if (!wasActive) api.send('select-tab', id)
 
+  // Selecting waits for the mouse button to come up. A tab dragged out for split view has to leave
+  // the page you're looking at on screen, to split with.
   const startX = e.clientX
-  dragState = { id, el, moved: false }
+  const startY = e.clientY
+  dragState = { id, el, moved: false, out: false }
 
   const others = () => [...strip.children].filter((c) => c !== el)
   const targetIndex = (x) => {
@@ -226,45 +259,165 @@ function onTabMouseDown(e, id, el) {
     return i === -1 ? list.length : i
   }
 
+  const isOutOfStrip = (ev) =>
+    ev.clientY > panelTop() + TAB_PULL_MARGIN ||
+    ev.clientY < -TAB_PULL_MARGIN ||
+    ev.clientX < -TAB_PULL_MARGIN ||
+    ev.clientX > window.innerWidth + TAB_PULL_MARGIN
+
+  const setOut = (out) => {
+    if (dragState.out === out) return
+    dragState.out = out
+    tabDragOut = out
+    el.classList.toggle('pulled-out', out)
+    el.classList.remove('dragging')
+    el.style.transform = ''
+    if (!out) dragZones.hidden = true
+    syncExpanded()
+    api.send(out ? 'tab-drag-start' : 'tab-drag-cancel', id)
+  }
+
   const onMove = (ev) => {
+    if (ev.buttons === 0) return onUp(ev) // the button came up somewhere we couldn't see it
     const dx = ev.clientX - startX
-    if (!dragState.moved && Math.abs(dx) < 6) return
-    if (state.tabs.length < 2) return
+    const dy = ev.clientY - startY
+    if (!dragState.moved && Math.abs(dx) < 6 && Math.abs(dy) < 6) return
     dragState.moved = true
+    if (isOutOfStrip(ev)) return setOut(true)
+    setOut(false)
+    if (state.tabs.length < 2) return
     el.classList.add('dragging')
     el.style.transform = `translateX(${dx}px)`
   }
 
-  const onUp = (ev) => {
+  const stopListening = () => {
     window.removeEventListener('mousemove', onMove)
     window.removeEventListener('mouseup', onUp)
-    const moved = dragState?.moved
+    window.removeEventListener('blur', cancel)
+  }
+
+  const onUp = (ev) => {
+    stopListening()
+    const { moved, out } = dragState
+    if (out) {
+      finishPull(el)
+      api.send('tab-drag-end')
+      return
+    }
     dragState = null
     el.classList.remove('dragging')
     el.style.transform = ''
-    if (moved) {
+    if (!tabEls.has(id)) return // closed while being dragged
+    if (moved && state.tabs.length > 1) {
       const index = targetIndex(ev.clientX)
       strip.insertBefore(el, others()[index] ?? null)
       api.send('move-tab', id, index)
-    } else if (wasActive) {
-      beginEdit()
+    }
+    if (!wasActive) api.send('select-tab', id)
+    else if (!moved) beginEdit()
+  }
+
+  const cancel = () => {
+    stopListening()
+    const { out } = dragState
+    if (out) {
+      finishPull(el)
+      api.send('tab-drag-cancel')
+    } else {
+      dragState = null
+      el.classList.remove('dragging')
+      el.style.transform = ''
     }
   }
+  dragState.cancel = cancel
 
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', onUp)
+  window.addEventListener('blur', cancel)
+}
+
+function finishPull(el) {
+  dragState = null
+  tabDragOut = false
+  el.classList.remove('pulled-out')
+  dragZones.hidden = true
+  syncExpanded()
+}
+
+function showDragZones({ offer, zone }) {
+  dragZones.hidden = !offer || !tabDragOut
+  for (const el of dragZones.children) el.classList.toggle('over', el.dataset.zone === zone)
+}
+
+/** A tab from another window is being held over this one: show where it would land. */
+function showDropMarker(x) {
+  const body = document.body.classList
+  body.toggle('drop-target', x != null)
+  dropMarker.hidden = x == null
+  if (x == null) return
+  const tabs = [...strip.children]
+  let index = tabs.findIndex((c) => {
+    const r = c.getBoundingClientRect()
+    return x < r.left + r.width / 2
+  })
+  if (index === -1) index = tabs.length
+  const before = tabs[index]?.getBoundingClientRect()
+  const after = tabs[index - 1]?.getBoundingClientRect()
+  dropMarker.style.left = `${before ? before.left - 4 : (after?.right ?? strip.getBoundingClientRect().left) + 2}px`
+  api.send('tab-drop-index', index)
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────
 
+const TAB_MOTION_MS = 170
+
+/** Tabs that aren't being looked at, or a system that asks for less motion, don't need animating. */
+function tabStripOnScreen() {
+  if (dragState || matchMedia('(prefers-reduced-motion: reduce)').matches) return false
+  return !state.toolbarAway || document.body.classList.contains('revealed')
+}
+
+function tabPlaces() {
+  return new Map([...strip.children].map((el) => [el, el.getBoundingClientRect().left]))
+}
+
+/** The other tabs glide from where they were into where they've ended up. */
+function tabsGlide(placesBefore) {
+  for (const [el, left] of placesBefore) {
+    if (!el.isConnected) continue
+    const moved = left - el.getBoundingClientRect().left
+    if (Math.abs(moved) < 1) continue
+    el.animate([{ transform: `translateX(${moved}px)` }, { transform: 'none' }], { duration: TAB_MOTION_MS, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' })
+  }
+}
+
+/** A picture of the closing tab stays where it was for a moment, shrinking away. It takes no clicks. */
+function tabLeaves(el) {
+  const rect = el.getBoundingClientRect()
+  if (!rect.width) return
+  const copy = el.cloneNode(true)
+  copy.querySelectorAll('[id]').forEach((part) => part.removeAttribute('id'))
+  copy.classList.remove('editing')
+  copy.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;margin:0;z-index:5;pointer-events:none`
+  document.body.append(copy)
+  copy.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(0.82) translateY(-5px)' }], { duration: TAB_MOTION_MS, easing: 'ease-in', fill: 'forwards' })
+  setTimeout(() => copy.remove(), TAB_MOTION_MS) // a timer, because animations wait while a window is out of sight
+}
+
 function render() {
   const body = document.body.classList
+  body.toggle('private', Boolean(state.private))
   body.toggle('single-tab', state.tabs.length <= 1)
   body.toggle('chrome-hidden', Boolean(state.chromeHidden))
   body.toggle('revealed', Boolean(state.revealed))
+  body.toggle('toolbar-away', Boolean(state.toolbarAway))
   body.toggle('find-open', Boolean(state.findOpen))
   body.toggle('fullscreen', Boolean(state.fullscreen))
   body.toggle('blurred', state.focused === false)
+  body.toggle('page-loading', Boolean(activeTab()?.loading))
+  const favbarWasOpen = body.contains('favbar-open')
+  body.toggle('favbar-open', Boolean(state.favoritesBar))
+  if (state.favoritesBar && !favbarWasOpen) fitFavorites()
 
   const tab = activeTab()
   $('#back').disabled = !tab?.canGoBack
@@ -272,17 +425,23 @@ function render() {
 
   // Reconcile tab elements by id.
   const ids = new Set(state.tabs.map((t) => t.id))
+  const tabsChanged = state.tabs.some((t) => !tabEls.has(t.id)) || [...tabEls.keys()].some((id) => !ids.has(id))
+  const animate = tabsChanged && tabEls.size > 0 && tabStripOnScreen()
+  const placesBefore = animate ? tabPlaces() : null
   for (const [id, el] of tabEls) {
     if (!ids.has(id)) {
+      if (animate) tabLeaves(el)
       el.remove()
       tabEls.delete(id)
       loadingBefore.delete(id)
     }
   }
   state.tabs.forEach((t, i) => {
+    const isNew = !tabEls.has(t.id)
     const el = tabEls.get(t.id) ?? createTabEl(t.id)
     updateTabEl(el, t)
     if (!dragState && strip.children[i] !== el) strip.insertBefore(el, strip.children[i] ?? null)
+    if (isNew && animate) el.animate([{ opacity: 0, transform: 'scale(0.82)' }, { opacity: 1, transform: 'none' }], { duration: TAB_MOTION_MS, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.1)' })
   })
   if (!mainPanel.hidden) syncMainPanel()
 
@@ -292,7 +451,10 @@ function render() {
     el.appendChild(address)
     el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }
+  if (placesBefore) tabsGlide(placesBefore)
   updateAddress()
+  renderShield()
+  reportFloatingRects()
 }
 
 function updateAddress() {
@@ -302,8 +464,8 @@ function updateAddress() {
 
   address.classList.toggle('placeholder', !info.text && !flashText)
   address.classList.toggle('flash', Boolean(flashText))
-  addressText.textContent = flashText ?? (info.text || PLACEHOLDER)
-  addressInput.placeholder = PLACEHOLDER
+  addressText.textContent = flashText ?? (info.text || placeholder())
+  addressInput.placeholder = placeholder()
 
   addressIcon.className = 'address-icon'
   if (flashText) {
@@ -318,17 +480,25 @@ function updateAddress() {
     addressIcon.title = 'Not secure'
   } else if (info.kind === 'extension' || info.kind === 'internal') {
     const host = parse(tab.url)?.hostname
-    const fallback = host === 'history' ? ICONS.clock : host === 'passwords' ? ICONS.key : ICONS.puzzle
+    const fallback = host === 'history' ? ICONS.clock : host === 'passwords' ? ICONS.key : host === 'protection' ? ICONS.shield : ICONS.puzzle
     setIcon(addressIcon, { favicon: tab.favicon, fallback })
   } else {
     setIcon(addressIcon, { favicon: tab.favicon, fallback: info.kind === 'secure' ? ICONS.lock : ICONS.globe })
   }
   if (info.kind !== 'insecure') addressIcon.title = ''
 
+  updateCapture(addressCapture, tab)
+  updateAudio(addressAudio, tab)
+
   zoomPill.hidden = !tab.zoom || tab.zoom === 100
   zoomPill.textContent = `${tab.zoom}%`
   reloadBtn.title = tab.loading ? 'Stop' : 'Reload'
   reloadBtn.hidden = info.kind === 'empty'
+
+  const isFavorite = favoriteUrls.has(tab.url)
+  starBtn.hidden = !/^https?:/.test(tab.url)
+  starBtn.classList.toggle('on', isFavorite)
+  starBtn.title = `${isFavorite ? 'Remove from' : 'Add to'} Favorites (Ctrl+D)`
 }
 
 // ── Address editing & suggestions ────────────────────────────────────────
@@ -337,7 +507,7 @@ let typed = ''
 let originalValue = ''
 let items = []
 let selected = 0
-let local = { tabs: [], history: [], completion: null }
+let local = { tabs: [], favorites: [], history: [], completion: null }
 let remote = []
 let suggestSeq = 0
 let remoteTimer = null
@@ -347,6 +517,7 @@ function beginEdit() {
   if (!tab) return
   if (!editing) {
     editing = true
+    api.send('hold', true)
     address.classList.add('editing')
     activeEl()?.classList.add('editing')
     originalValue = editValue(tab)
@@ -362,9 +533,9 @@ function endEdit() {
   editing = false
   address.classList.remove('editing')
   for (const el of tabEls.values()) el.classList.remove('editing')
+  api.send('hold', false)
   hideSuggestions()
   updateAddress()
-  if (state.chromeHidden) scheduleConceal()
 }
 
 function navigate(text, newTab = false) {
@@ -377,7 +548,7 @@ function requestSuggestions(query, allowCompletion) {
   const seq = ++suggestSeq
   clearTimeout(remoteTimer)
   if (!query.trim()) {
-    local = { tabs: [], history: [], completion: null }
+    local = { tabs: [], favorites: [], history: [], completion: null }
     remote = []
     hideSuggestions()
     return
@@ -415,13 +586,20 @@ function buildItems() {
     value,
     icon: isUrl ? ICONS.globe : ICONS.search,
     title: value,
-    sub: isUrl ? 'Go to site' : 'DuckDuckGo Search',
+    sub: isUrl ? 'Go to site' : `${searchName()} Search`,
   })
 
   if (local.tabs.length) {
     list.push({ section: 'Switch to Tab' })
     for (const t of local.tabs) {
       list.push({ kind: 'tab', id: t.id, icon: ICONS.tab, title: t.title, sub: hostOf(t.url), badge: 'Switch to Tab' })
+    }
+  }
+
+  if (local.favorites.length) {
+    list.push({ section: 'Favorites' })
+    for (const f of local.favorites) {
+      list.push({ kind: 'url', value: f.url, favicon: FAVICON_SERVICE(hostOf(f.url)), icon: ICONS.star, title: f.title || hostOf(f.url), sub: f.url.replace(/^https?:\/\/(www\.)?/, '') })
     }
   }
 
@@ -434,7 +612,7 @@ function buildItems() {
 
   const phrases = remote.filter((p) => p.toLowerCase() !== query.toLowerCase()).slice(0, 6)
   if (phrases.length) {
-    list.push({ section: 'DuckDuckGo Suggestions' })
+    list.push({ section: `${searchName()} Suggestions` })
     for (const p of phrases) list.push({ kind: 'search', value: p, icon: ICONS.search, title: p })
   }
   return list
@@ -470,7 +648,7 @@ function showSuggestions() {
   const width = Math.min(Math.max(r.width, 560), window.innerWidth - 16)
   const left = Math.max(8, Math.min(r.left + r.width / 2 - width / 2, window.innerWidth - width - 8))
   suggestionsEl.style.left = `${left}px`
-  suggestionsEl.style.top = `${r.bottom + 8}px`
+  suggestionsEl.style.top = `${panelTop()}px`
   suggestionsEl.style.width = `${width}px`
   suggestionsEl.hidden = false
   syncExpanded()
@@ -559,16 +737,31 @@ reloadBtn.addEventListener('click', (e) => {
   api.send(activeTab()?.loading ? 'stop' : 'reload')
 })
 
+starBtn.addEventListener('mousedown', (e) => e.stopPropagation())
+starBtn.addEventListener('click', (e) => {
+  e.stopPropagation()
+  api.send('favorite-toggle')
+})
+
+addressAudio.addEventListener('mousedown', (e) => e.stopPropagation())
+addressAudio.addEventListener('click', (e) => {
+  e.stopPropagation()
+  api.send('toggle-mute', state.activeId)
+})
+
 zoomPill.addEventListener('mousedown', (e) => e.stopPropagation())
 zoomPill.addEventListener('click', (e) => {
   e.stopPropagation()
   api.send('zoom-reset')
 })
 
+let flashTimer = null
+
 function flash(message) {
   flashText = message
   updateAddress()
-  setTimeout(() => {
+  clearTimeout(flashTimer)
+  flashTimer = setTimeout(() => {
     flashText = null
     updateAddress()
   }, 1600)
@@ -584,28 +777,72 @@ function syncExpanded() {
     !downloadsPanel.hidden ||
     !customizePanel.hidden ||
     !mainPanel.hidden ||
+    !shieldPanel.hidden ||
     menuOpen ||
+    tabDragOut ||
     prompts.size > 0
   if (want === expanded) return
   expanded = want
   document.body.classList.toggle('expanded', want)
   api.send('expand', want)
-  if (!want && state.chromeHidden) scheduleConceal()
+}
+
+/**
+ * Where dropdowns start: just below the toolbar row. Measured from layout rather than from the
+ * elements on screen, which may be above the window while they're slid away.
+ */
+function panelTop() {
+  const toolbar = $('#toolbar')
+  return toolbar.offsetTop + toolbar.offsetHeight
 }
 
 $('#scrim').addEventListener('mousedown', (e) => {
   e.preventDefault()
+  // A menu opened from a text field closes on its own, leaving the field in use.
+  if (menuOpen) {
+    closeMenus()
+    return
+  }
   downloadsPanel.hidden = true
   customizePanel.hidden = true
   mainPanel.hidden = true
-  closeMenus()
+  shieldPanel.hidden = true
   dismissAllPrompts()
-  if (editing) {
-    addressInput.blur()
-    api.send('focus-page')
-  }
+  if (editing) addressInput.blur()
+  api.send('focus-page')
   hideSuggestions()
   syncExpanded()
+})
+
+// ── Clicks on the empty parts of the view ────────────────────────────────
+
+// With auto-hide on, this view is a rectangle over the top of the page. Where nothing is drawn in it,
+// a click belongs to the page underneath.
+let pagePress = null
+
+window.addEventListener('mousedown', (e) => {
+  const empty = e.target === document.body || e.target === document.documentElement
+  if (!empty || !state.chromeHidden || expanded) return
+  e.preventDefault()
+  pagePress = { button: e.button }
+  api.send('page-mouse', 'mouseDown', e.clientX, e.clientY, e.button, e.detail)
+})
+
+function endPagePress(e) {
+  const { button } = pagePress
+  pagePress = null
+  api.send('page-mouse', 'mouseUp', e.clientX, e.clientY, button, e.detail || 1)
+}
+
+window.addEventListener('mousemove', (e) => {
+  if (!pagePress) return
+  // Nothing held any more: the release happened somewhere this view never heard about it.
+  if (e.buttons === 0) endPagePress(e)
+  else api.send('page-mouse', 'mouseMove', e.clientX, e.clientY, pagePress.button, 0)
+})
+
+window.addEventListener('mouseup', (e) => {
+  if (pagePress?.button === e.button) endPagePress(e)
 })
 
 // ── Toolbar buttons ──────────────────────────────────────────────────────
@@ -623,27 +860,147 @@ for (const btn of document.querySelectorAll('.wc')) {
   btn.addEventListener('click', () => api.send('window', btn.dataset.action))
 }
 
-// ── Focus mode / full screen: reveal on hover ────────────────────────────
+// ── Auto-hide ────────────────────────────────────────────────────────────
 
-let concealTimer = null
+let rectsTimer = null
+let lastRects = ''
 
-$('#reveal-strip').addEventListener('mouseenter', () => {
-  if (state.chromeHidden && !state.revealed) api.send('reveal', true)
+/**
+ * Auto-hide runs in the main process, which watches the pointer (see watchPointer in shell.js).
+ * It's told where the floating elements are, so that the empty space between them doesn't count as
+ * "using the toolbar" and the page beneath becomes clickable again.
+ */
+function reportFloatingRects() {
+  clearTimeout(rectsTimer)
+  rectsTimer = setTimeout(() => {
+    if (!state.chromeHidden || !state.revealed) return // only meaningful once they've slid in
+    const rects = [...document.querySelectorAll('#left-pill, #right-pill, #fav-pill, #find-pill, .tab')]
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0)
+      .map((r) => ({ x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) }))
+    const key = JSON.stringify(rects)
+    if (key === lastRects) return
+    lastRects = key
+    api.send('floating-rects', rects)
+  }, 340) // just after the slide-in animation
+}
+
+// A mouse wheel scrolls the tabs sideways when there are too many to fit.
+strip.addEventListener('wheel', (e) => {
+  if (e.deltaY && !e.deltaX) strip.scrollLeft += e.deltaY
+  reportFloatingRects()
+}, { passive: true })
+
+// ── Favorites bar ────────────────────────────────────────────────────────
+
+const favItems = $('#fav-items')
+const favMore = $('#fav-more')
+let favorites = []
+let favoriteUrls = new Set()
+let favOverflowFrom = 0
+
+function setFavorites(list) {
+  favorites = list
+  favoriteUrls = new Set(list.map((f) => f.url))
+  favItems.replaceChildren(...list.map(createFavoriteEl))
+  fitFavorites()
+  updateAddress()
+  if (!mainPanel.hidden) syncMainPanel()
+}
+
+function createFavoriteEl(favorite) {
+  const el = document.createElement('button')
+  el.className = 'fav-item'
+  el.tabIndex = -1
+  el.title = favorite.title ? `${favorite.title}\n${favorite.url}` : favorite.url
+  const icon = Object.assign(document.createElement('span'), { className: 'fav-icon' })
+  setIcon(icon, { favicon: FAVICON_SERVICE(hostOf(favorite.url)) })
+  const title = Object.assign(document.createElement('span'), { className: 'fav-title', textContent: favorite.title || hostOf(favorite.url) })
+  el.append(icon, title)
+
+  el.addEventListener('mousedown', (e) => onFavoriteMouseDown(e, favorite, el))
+  el.addEventListener('auxclick', (e) => {
+    if (e.button === 1) api.send('navigate', favorite.url, { newTab: true })
+  })
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault()
+    api.send('favorite-menu', favorite.url, e.clientX, e.clientY)
+  })
+  return el
+}
+
+function onFavoriteMouseDown(e, favorite, el) {
+  if (e.button === 1) e.preventDefault() // no autoscroll
+  if (e.button !== 0) return
+  e.preventDefault()
+
+  const startX = e.clientX
+  let moved = false
+  const others = () => [...favItems.children].filter((c) => c !== el && !c.hidden)
+
+  const onMove = (ev) => {
+    const dx = ev.clientX - startX
+    if (!moved && Math.abs(dx) < 5) return
+    moved = true
+    el.classList.add('dragging')
+    el.style.transform = `translateX(${dx}px)`
+  }
+  const onUp = (ev) => {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+    el.classList.remove('dragging')
+    el.style.transform = ''
+    if (!moved) {
+      api.send('navigate', favorite.url, { newTab: ev.ctrlKey || ev.metaKey })
+      return
+    }
+    const list = others()
+    const found = list.findIndex((c) => {
+      const r = c.getBoundingClientRect()
+      return ev.clientX < r.left + r.width / 2
+    })
+    const index = found === -1 ? list.length : found
+    favItems.insertBefore(el, list[index] ?? null)
+    api.send('favorite-move', favorite.url, index)
+  }
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
+
+/** Shows as many favorites as fit; the rest go behind the » button. */
+function fitFavorites() {
+  const items = [...favItems.children]
+  for (const el of items) el.hidden = false
+  favMore.hidden = true
+  favOverflowFrom = items.length
+  if (!document.body.classList.contains('favbar-open') || !items.length) return reportFloatingRects()
+
+  const GAP = 2
+  const available = window.innerWidth - 16 - 8 // window margins and the pill's own padding
+  const widths = items.map((el) => el.offsetWidth)
+  const total = widths.reduce((sum, w) => sum + w + GAP, -GAP)
+  if (total > available) {
+    const room = available - 30 // the » button
+    let used = 0
+    let count = 0
+    for (const w of widths) {
+      if (used + w + GAP > room) break
+      used += w + GAP
+      count += 1
+    }
+    favOverflowFrom = count
+    items.slice(count).forEach((el) => (el.hidden = true))
+    favMore.hidden = false
+  }
+  reportFloatingRects()
+}
+
+favMore.addEventListener('click', () => {
+  const r = favMore.getBoundingClientRect()
+  api.send('favorites-overflow', favOverflowFrom, Math.max(8, r.right - 230), r.bottom + 6)
 })
 
-document.documentElement.addEventListener('mouseenter', () => clearTimeout(concealTimer))
-document.documentElement.addEventListener('mouseleave', scheduleConceal)
-
-function scheduleConceal() {
-  clearTimeout(concealTimer)
-  concealTimer = setTimeout(() => {
-    if (!state.chromeHidden || !state.revealed) return
-    if (editing || expanded || document.activeElement === findInput) return
-    if (document.documentElement.matches(':hover')) return
-    document.body.classList.remove('revealed')
-    setTimeout(() => api.send('reveal', false), 180)
-  }, 450)
-}
+api.invoke('favorites').then(setFavorites)
 
 // ── Find in page ─────────────────────────────────────────────────────────
 
@@ -664,7 +1021,6 @@ findInput.addEventListener('keydown', (e) => {
 $('#find-prev').addEventListener('click', () => api.send('find', findInput.value, { newSession: false, forward: false }))
 $('#find-next').addEventListener('click', () => api.send('find', findInput.value, { newSession: false, forward: true }))
 $('#find-done').addEventListener('click', () => api.send('find-close'))
-findInput.addEventListener('blur', () => state.chromeHidden && scheduleConceal())
 
 function showFound({ active, matches }) {
   if (!findInput.value) {
@@ -729,8 +1085,10 @@ function renderDownloads() {
 }
 
 function positionDownloads() {
-  const r = downloadsBtn.getBoundingClientRect()
-  downloadsPanel.style.top = `${r.bottom + 8}px`
+  // The button only exists once there's a download; until then line up with the ⋯ button.
+  const anchor = downloadsBtn.hidden ? $('#menu-btn') : downloadsBtn
+  const r = anchor.getBoundingClientRect()
+  downloadsPanel.style.top = `${panelTop()}px`
   downloadsPanel.style.left = `${Math.max(8, Math.min(r.right - 340, window.innerWidth - 348))}px`
 }
 
@@ -739,7 +1097,7 @@ function toggleDownloads(force) {
   if (open) {
     customizePanel.hidden = true
     mainPanel.hidden = true
-    if (downloadsBtn.hidden) downloadsBtn.hidden = false
+    shieldPanel.hidden = true
     renderDownloads()
     positionDownloads()
   }
@@ -807,6 +1165,7 @@ function syncCustomize() {
   for (const btn of document.querySelectorAll('#cz-material button')) btn.classList.toggle('selected', btn.dataset.material === look.material)
   $('#cz-focus').classList.toggle('on', look.autoHide)
   $('#cz-fullscreen').classList.toggle('on', look.fullscreen)
+  $('#cz-favbar').classList.toggle('on', look.favoritesBar)
   if (document.activeElement !== $('#cz-c1')) $('#cz-c1').value = look.colors[0]
   if (document.activeElement !== $('#cz-c2')) $('#cz-c2').value = look.colors[1]
   for (const key of Object.keys(SLIDERS)) {
@@ -871,10 +1230,11 @@ $('#cz-swap').addEventListener('click', () => {
 $('#cz-reset').addEventListener('click', () => api.send('appearance-reset'))
 $('#cz-focus').addEventListener('click', () => api.send('toggle-focus-mode'))
 $('#cz-fullscreen').addEventListener('click', () => look && sendLook({ fullscreen: !look.fullscreen }))
+$('#cz-favbar').addEventListener('click', () => look && sendLook({ favoritesBar: !look.favoritesBar }))
 
 function positionCustomize() {
   const r = $('#customize-btn').getBoundingClientRect()
-  const top = r.bottom + 8
+  const top = panelTop()
   customizePanel.style.top = `${top}px`
   customizePanel.style.left = `${Math.max(8, Math.min(r.right - 300, window.innerWidth - 308))}px`
   customizePanel.style.maxHeight = `${window.innerHeight - top - 12}px`
@@ -885,6 +1245,7 @@ function toggleCustomize(force) {
   if (open) {
     downloadsPanel.hidden = true
     mainPanel.hidden = true
+    shieldPanel.hidden = true
     syncCustomize()
     positionCustomize()
   }
@@ -899,6 +1260,67 @@ api.invoke('appearance').then((catalog) => {
   applyAppearance(catalog.settings)
 })
 
+// ── Ad and tracker blocking ──────────────────────────────────────────────
+
+const SHIELD_STATUS = {
+  loading: 'Downloading filter lists…',
+  unavailable: 'Couldn’t download filter lists. Trying again soon.',
+}
+
+function renderShield() {
+  const p = state.protection
+  if (!p) return
+  const blocked = activeTab()?.blocked ?? { ads: 0, trackers: 0 }
+  const total = blocked.ads + blocked.trackers
+  const off = (!p.ads && !p.trackers) || p.allowed
+
+  shieldBtn.classList.toggle('off', off)
+  const badge = $('#shield-count')
+  badge.hidden = off || total === 0
+  badge.textContent = total > 99 ? '99+' : String(total)
+
+  if (shieldPanel.hidden) return
+  $('#shield-ads-switch').classList.toggle('on', p.ads)
+  $('#shield-trackers-switch').classList.toggle('on', p.trackers)
+  $('#shield-ads').textContent = blocked.ads ? String(blocked.ads) : ''
+  $('#shield-trackers').textContent = blocked.trackers ? String(blocked.trackers) : ''
+  $('#shield-total').textContent = total ? `${total} blocked on this page` : ''
+  $('#shield-site-row').hidden = !p.site
+  $('#shield-site').textContent = p.site ? `On for ${p.site}` : ''
+  $('#shield-site-switch').classList.toggle('on', !p.allowed)
+  const statusEl = $('#shield-status')
+  statusEl.textContent = SHIELD_STATUS[p.status] ?? ''
+  statusEl.hidden = !SHIELD_STATUS[p.status]
+}
+
+function positionShield() {
+  const r = shieldBtn.getBoundingClientRect()
+  shieldPanel.style.top = `${panelTop()}px`
+  shieldPanel.style.left = `${Math.max(8, Math.min(r.right - 280, window.innerWidth - 288))}px`
+}
+
+function toggleShield(force) {
+  const open = force ?? shieldPanel.hidden
+  if (open) {
+    downloadsPanel.hidden = true
+    customizePanel.hidden = true
+    mainPanel.hidden = true
+    positionShield()
+  }
+  shieldPanel.hidden = !open
+  if (open) renderShield()
+  syncExpanded()
+}
+
+shieldBtn.addEventListener('click', () => toggleShield())
+$('#shield-ads-switch').addEventListener('click', () => api.send('protection-set', { ads: !state.protection?.ads }))
+$('#shield-trackers-switch').addEventListener('click', () => api.send('protection-set', { trackers: !state.protection?.trackers }))
+$('#shield-site-switch').addEventListener('click', () => api.send('protection-toggle-site'))
+$('#shield-manage').addEventListener('click', () => {
+  toggleShield(false)
+  api.send('menu-action', 'protection')
+})
+
 // ── ⋯ panel ──────────────────────────────────────────────────────────────
 
 const PANEL_UI_ACTIONS = {
@@ -906,20 +1328,26 @@ const PANEL_UI_ACTIONS = {
   customize: () => toggleCustomize(true),
 }
 // Actions you'd likely repeat keep the panel open.
-const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-fullscreen'])
+const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-split-links', 'toggle-fullscreen'])
 
 function syncMainPanel() {
   const tab = activeTab()
   $('#mp-zoom').textContent = `${tab?.zoom ?? 100}%`
   $('#mp-autohide').classList.toggle('on', Boolean(state.focusMode))
   $('#mp-fullscreen').classList.toggle('on', Boolean(state.fullscreen))
+  $('#mp-favbar').classList.toggle('on', Boolean(state.favoritesBarEnabled))
+  $('#mp-protection').classList.toggle('on', Boolean(state.protection?.ads || state.protection?.trackers))
+  $('#mp-sleep-tabs').classList.toggle('on', Boolean(state.sleepTabs))
+  $('#mp-split-links').classList.toggle('on', Boolean(state.splitLinks))
+  $('#mp-split-label').textContent = tab?.split ? 'Separate Split View' : 'Split View'
+  $('#mp-favorite-label').textContent = `${favoriteUrls.has(tab?.url) ? 'Remove from' : 'Add to'} Favorites`
   $('[data-action="favorite"]', mainPanel).disabled = !/^https?:/.test(tab?.url ?? '')
   $('[data-action="devtools"]', mainPanel).disabled = !tab
 }
 
 function positionMainPanel() {
   const r = $('#menu-btn').getBoundingClientRect()
-  const top = r.bottom + 8
+  const top = panelTop()
   mainPanel.style.top = `${top}px`
   mainPanel.style.left = `${Math.max(8, Math.min(r.right - 290, window.innerWidth - 298))}px`
   mainPanel.style.maxHeight = `${window.innerHeight - top - 12}px`
@@ -930,6 +1358,7 @@ function toggleMainPanel(force) {
   if (open) {
     downloadsPanel.hidden = true
     customizePanel.hidden = true
+    shieldPanel.hidden = true
     syncMainPanel()
     positionMainPanel()
   }
@@ -949,6 +1378,8 @@ mainPanel.addEventListener('click', (e) => {
 // ── Menus (drawn here instead of native OS menus) ────────────────────────
 
 const menusEl = $('#menus')
+// Clicking a menu mustn't take focus from the text field it may be acting on.
+menusEl.addEventListener('mousedown', (e) => e.preventDefault())
 const isMac = api.platform === 'darwin'
 
 function formatAccelerator(accel) {
@@ -1022,6 +1453,7 @@ function openMenu({ items, x, y }) {
   menuOpen = true
   downloadsPanel.hidden = true
   customizePanel.hidden = true
+  shieldPanel.hidden = true
   syncExpanded()
   // The UI view has to grow to the full window before the menu can be measured and placed.
   let rendered = false
@@ -1030,7 +1462,7 @@ function openMenu({ items, x, y }) {
     rendered = true
     renderMenuLevel(items, x, y, 0)
   }
-  if (alreadyExpanded || window.innerHeight > y + 40) return render()
+  if (alreadyExpanded) return render()
   window.addEventListener('resize', render, { once: true })
   setTimeout(render, 120)
 }
@@ -1091,25 +1523,48 @@ function showPrompt(data) {
     el.append(label)
   }
 
+  const inputs = new Map()
+  for (const field of data.fields ?? []) {
+    const label = Object.assign(document.createElement('label'), { className: 'prompt-field', textContent: field.label })
+    const input = Object.assign(document.createElement('input'), { type: field.type === 'password' ? 'password' : 'text', value: field.value ?? '', spellcheck: false })
+    label.append(input)
+    el.append(label)
+    inputs.set(field.id, input)
+  }
+  const collect = () => Object.fromEntries([...inputs].map(([id, input]) => [id, input.value]))
+
   const buttons = document.createElement('div')
   buttons.className = 'prompt-buttons'
   for (const b of data.buttons ?? []) {
     const btn = Object.assign(document.createElement('button'), { className: `btn ${b.style ?? 'secondary'}`, textContent: b.label })
-    btn.addEventListener('click', () => answerPrompt(data.id, b.id, checkbox?.checked))
+    btn.addEventListener('click', () => answerPrompt(data.id, b.id, checkbox?.checked, collect()))
     buttons.append(btn)
   }
   el.append(buttons)
 
+  // Enter in a field means the primary button.
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || !['text', 'password'].includes(e.target.type)) return
+    const primary = (data.buttons ?? []).find((b) => b.style === 'primary')
+    if (primary) answerPrompt(data.id, primary.id, checkbox?.checked, collect())
+  })
+
   prompts.set(data.id, { data, el })
   promptsEl.append(el)
   syncExpanded()
+
+  const first = inputs.values().next().value
+  if (first) {
+    first.focus()
+    first.select()
+  }
 }
 
-function answerPrompt(id, button, checked = false) {
+function answerPrompt(id, button, checked = false, values = null) {
   const entry = prompts.get(id)
   if (!entry) return
   prompts.delete(id)
-  api.send('prompt-response', id, button, checked)
+  api.send('prompt-response', id, button, checked, values)
   entry.el.classList.add('leaving')
   setTimeout(() => entry.el.remove(), 160)
   syncExpanded()
@@ -1145,6 +1600,8 @@ api.onEvent((type, payload) => {
       break
     case 'download-started':
       downloadsBtn.hidden = false
+      break
+    case 'download-landed':
       downloadsBtn.classList.remove('bounce')
       void downloadsBtn.offsetWidth
       downloadsBtn.classList.add('bounce')
@@ -1154,6 +1611,15 @@ api.onEvent((type, payload) => {
       break
     case 'flash':
       flash(payload)
+      break
+    case 'favorites':
+      setFavorites(payload)
+      break
+    case 'tab-drag-zone':
+      showDragZones(payload)
+      break
+    case 'tab-drop-hover':
+      showDropMarker(payload)
       break
     case 'appearance':
       applyAppearance(payload)
@@ -1167,6 +1633,9 @@ api.onEvent((type, payload) => {
     case 'prompt':
       showPrompt(payload)
       break
+    case 'prompt-close':
+      answerPrompt(payload, prompts.get(payload)?.data.cancelId)
+      break
   }
 })
 
@@ -1175,14 +1644,28 @@ window.addEventListener('resize', () => {
   if (!downloadsPanel.hidden) positionDownloads()
   if (!customizePanel.hidden) positionCustomize()
   if (!mainPanel.hidden) positionMainPanel()
+  if (!shieldPanel.hidden) positionShield()
+  fitFavorites()
+})
+
+document.addEventListener('contextmenu', (e) => {
+  const input = e.target.closest?.('input[type="text"]')
+  if (!input) return
+  e.preventDefault()
+  api.send('input-menu', e.clientX, e.clientY, {
+    hasSelection: input.selectionStart !== input.selectionEnd,
+    isAddress: input === addressInput,
+  })
 })
 
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return
+  if (dragState?.cancel) return dragState.cancel()
   if (menuOpen) return closeMenus()
   if (!mainPanel.hidden) toggleMainPanel(false)
   if (!downloadsPanel.hidden) toggleDownloads(false)
   if (!customizePanel.hidden) toggleCustomize(false)
+  if (!shieldPanel.hidden) toggleShield(false)
   if (prompts.size) dismissAllPrompts()
 })
 

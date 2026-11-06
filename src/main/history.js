@@ -15,7 +15,15 @@ let entries = null // Map<url, { url, title, visits, lastVisit }>
 function load() {
   if (entries) return
   entries = new Map()
-  for (const entry of store.get('history')) entries.set(entry.url, entry)
+  for (const entry of store.get('history')) {
+    if (typeof entry?.url !== 'string') continue
+    entries.set(entry.url, {
+      url: entry.url,
+      title: typeof entry.title === 'string' ? entry.title : '',
+      visits: Number(entry.visits) || 1,
+      lastVisit: Number(entry.lastVisit) || 0,
+    })
+  }
   prune()
 }
 
@@ -78,6 +86,30 @@ function record(url, title) {
   if (title && title !== url) entry.title = title
   entries.set(url, entry)
   save()
+}
+
+/**
+ * Adds entries from another browser, keeping the newest visit and the higher count for pages already
+ * known. Works whether or not history is being recorded: importing it was asked for specifically.
+ * Returns how many entries there were to add.
+ */
+function importEntries(list) {
+  load()
+  let count = 0
+  for (const item of list) {
+    if (!isRecordable(item.url)) continue
+    count += 1
+    const entry = entries.get(item.url)
+    if (entry) {
+      entry.visits = Math.max(entry.visits, item.visits)
+      entry.lastVisit = Math.max(entry.lastVisit, item.lastVisit)
+      entry.title ||= item.title
+    } else {
+      entries.set(item.url, { url: item.url, title: item.title, visits: item.visits, lastVisit: item.lastVisit })
+    }
+  }
+  save()
+  return count
 }
 
 function updateTitle(url, title) {
@@ -195,6 +227,7 @@ function originsSince(since) {
 
 module.exports = {
   record,
+  importEntries,
   updateTitle,
   query,
   recent,

@@ -45,7 +45,8 @@ async function offerToSave(event, origin, username, password) {
   }
 
   const { BrowserShell } = require('./shell')
-  const shell = BrowserShell.fromWebContents(event.sender)
+  // Sign-in popups aren't tabs, so they fall back to the most recently used window.
+  const shell = BrowserShell.fromWebContents(event.sender) ?? BrowserShell.lastFocused()
   const host = new URL(origin).host
   const { button } = await prompts.ask(shell, {
     origin,

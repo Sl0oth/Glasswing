@@ -1,0 +1,101 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    />
+    <title>Welcome to Glasswing</title>
+    <link rel="stylesheet" href="setup.css" />
+  </head>
+  <body>
+    <div id="tint"></div>
+    <div id="glow"></div>
+    <div id="grain"></div>
+
+    <header>
+      <button id="close" title="Close" aria-label="Close">
+        <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+      </button>
+    </header>
+
+    <main>
+      <section data-step="welcome" class="center">
+        <img id="logo" alt="" />
+        <h1>Welcome to Glasswing</h1>
+        <p>A quiet browser that stays out of the way of what you’re looking at. Let’s set it up. It only takes a minute.</p>
+      </section>
+
+      <section data-step="import">
+        <h2>Bring your stuff with you</h2>
+        <p class="lead">Your bookmarks and history can come along from another browser. That browser isn’t changed.</p>
+        <div id="browser-list" class="list"></div>
+        <div id="import-parts" class="chips">
+          <label class="chip"><input type="checkbox" id="part-bookmarks" checked /><span>Bookmarks</span></label>
+          <label class="chip"><input type="checkbox" id="part-history" checked /><span>History</span></label>
+          <label class="chip"><input type="checkbox" id="part-settings" checked /><span>Search engine and bar</span></label>
+        </div>
+        <p id="import-note" class="note">Saved passwords, cookies and extensions aren’t brought over.</p>
+        <p id="import-result" class="result" hidden></p>
+      </section>
+
+      <section data-step="look">
+        <h2>Make it yours</h2>
+        <p class="lead">This window changes as you pick, so you can see it.</p>
+        <div class="field-label">Theme</div>
+        <div id="presets" class="presets"></div>
+        <div class="field-label">Accent</div>
+        <div id="accents" class="accents"></div>
+        <div class="two">
+          <div>
+            <div class="field-label">Glass</div>
+            <div id="material" class="segments">
+              <button data-value="acrylic">Acrylic</button>
+              <button data-value="mica">Mica</button>
+              <button data-value="none">None</button>
+            </div>
+          </div>
+          <div>
+            <div class="field-label">Tint</div>
+            <input id="tint-range" type="range" min="0" max="1" step="0.01" aria-label="Tint" />
+          </div>
+        </div>
+      </section>
+
+      <section data-step="browsing">
+        <h2>How you browse</h2>
+        <div class="field-label">Search with</div>
+        <div id="engines" class="segments wide"></div>
+        <div class="rows">
+          <label class="row"><span><b>Block ads</b><small>Sign-in, payment and CAPTCHA pages are left alone.</small></span><input type="checkbox" class="switch" id="ads" /></label>
+          <label class="row"><span><b>Block trackers</b><small>Stops companies following you between sites.</small></span><input type="checkbox" class="switch" id="trackers" /></label>
+          <label class="row"><span><b>Hide the toolbar until you need it</b><small>Touch the top of the window and it slides down.</small></span><input type="checkbox" class="switch" id="auto-hide" /></label>
+          <label class="row"><span><b>Show the favorites bar</b><small>A row of favorites under the toolbar.</small></span><input type="checkbox" class="switch" id="favorites-bar" /></label>
+          <label class="row"><span><b>Open windows in full screen</b><small>Covers the taskbar too. F11 switches any time.</small></span><input type="checkbox" class="switch" id="fullscreen" /></label>
+        </div>
+      </section>
+
+      <section data-step="updates">
+        <h2>Keep it up to date</h2>
+        <p class="lead">Glasswing looks for new versions when it starts and every few hours. It never restarts without asking.</p>
+        <div class="list">
+          <label class="option"><input type="radio" name="updates" value="auto" /><span><b>Download updates for me</b><small>When one’s ready, you choose when to restart.</small></span></label>
+          <label class="option"><input type="radio" name="updates" value="ask" /><span><b>Ask me before downloading</b><small>You’ll see a message when there’s a new version.</small></span></label>
+        </div>
+        <p class="note">You can change your look any time from <b>⋯ → Appearance</b>, and come back here from <b>⋯ → Setup and Import</b>.</p>
+      </section>
+    </main>
+
+    <footer>
+      <div id="dots"></div>
+      <div class="actions">
+        <button id="skip" class="secondary" hidden>Skip</button>
+        <button id="back" class="secondary" hidden>Back</button>
+        <button id="next" class="primary">Get Started</button>
+      </div>
+    </footer>
+
+    <script src="setup.js"></script>
+  </body>
+</html>

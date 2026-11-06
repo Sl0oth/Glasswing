@@ -30,6 +30,35 @@ body {
   background: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(255, 255, 255, 0.04), transparent 70%);
 }
 
+.private-note {
+  max-width: 560px;
+  padding: 14px 18px;
+  border: 1px solid color-mix(in srgb, #7c4dff 55%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, #7c4dff 16%, transparent);
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.private-note[hidden] {
+  display: none;
+}
+
+.private-note h2 {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.private-note p {
+  margin: 0 0 6px;
+}
+
+.private-note p:last-child {
+  margin: 0;
+}
+
 main {
   min-height: 100vh;
   display: flex;

@@ -10,34 +10,39 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <div id="reveal-strip"></div>
+    <!-- While the toolbar is out of sight, this thin line is the only sign a page is loading. -->
+    <div id="top-progress"></div>
 
+    <!-- No bar here: each element below floats on its own over whatever is behind it. -->
     <div id="chrome">
       <header id="toolbar">
-        <div id="window-controls" class="window-controls">
-          <button class="wc wc-close" data-action="close" title="Close" tabindex="-1">
-            <svg viewBox="0 0 12 12"><path d="M3.5 3.5l5 5M8.5 3.5l-5 5" /></svg>
-          </button>
-          <button class="wc wc-min" data-action="minimize" title="Minimize" tabindex="-1">
-            <svg viewBox="0 0 12 12"><path d="M3 6h6" /></svg>
-          </button>
-          <button class="wc wc-max" data-action="maximize" title="Maximize" tabindex="-1">
-            <svg viewBox="0 0 12 12" class="filled"><path d="M3.2 3.2h4L3.2 7.2z M8.8 8.8h-4l4-4z" /></svg>
-          </button>
+        <div id="left-pill" class="pill floating" style="--order: 0">
+          <div id="window-controls" class="window-controls">
+            <button class="wc wc-close" data-action="close" title="Close" tabindex="-1">
+              <svg viewBox="0 0 12 12"><path d="M3.5 3.5l5 5M8.5 3.5l-5 5" /></svg>
+            </button>
+            <button class="wc wc-min" data-action="minimize" title="Minimize" tabindex="-1">
+              <svg viewBox="0 0 12 12"><path d="M3 6h6" /></svg>
+            </button>
+            <button class="wc wc-max" data-action="maximize" title="Maximize" tabindex="-1">
+              <svg viewBox="0 0 12 12" class="filled"><path d="M3.2 3.2h4L3.2 7.2z M8.8 8.8h-4l4-4z" /></svg>
+            </button>
+          </div>
+
+          <div class="nav-buttons">
+            <button id="back" class="icon-btn" title="Back (Alt+Left)" tabindex="-1">
+              <svg viewBox="0 0 16 16"><path d="M10 3L5 8l5 5" /></svg>
+            </button>
+            <button id="forward" class="icon-btn" title="Forward (Alt+Right)" tabindex="-1">
+              <svg viewBox="0 0 16 16"><path d="M6 3l5 5-5 5" /></svg>
+            </button>
+          </div>
         </div>
 
-        <div class="nav-buttons">
-          <button id="back" class="icon-btn" title="Back" tabindex="-1">
-            <svg viewBox="0 0 16 16"><path d="M10 3L5 8l5 5" /></svg>
-          </button>
-          <button id="forward" class="icon-btn" title="Forward" tabindex="-1">
-            <svg viewBox="0 0 16 16"><path d="M6 3l5 5-5 5" /></svg>
-          </button>
-        </div>
+        <div id="tabstrip" class="floating" style="--order: 1"></div>
 
-        <div id="tabstrip"></div>
-
-        <div class="toolbar-actions">
+        <div id="right-pill" class="pill floating toolbar-actions" style="--order: 2">
+          <span id="private-badge" title="This window doesn’t keep history, cookies or site data after it closes">Private</span>
           <button id="new-tab" class="icon-btn" title="New Tab" tabindex="-1">
             <svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10" /></svg>
           </button>
@@ -45,6 +50,10 @@
           <button id="downloads-btn" class="icon-btn" title="Downloads" tabindex="-1" hidden>
             <svg class="dl-ring" viewBox="0 0 24 24"><circle class="dl-track" cx="12" cy="12" r="10" /><circle class="dl-progress" cx="12" cy="12" r="10" /></svg>
             <svg class="dl-arrow" viewBox="0 0 16 16"><path d="M8 3v8M4.5 7.5L8 11l3.5-3.5M4 13.5h8" /></svg>
+          </button>
+          <button id="shield-btn" class="icon-btn" title="Ad and tracker blocking" tabindex="-1">
+            <svg viewBox="0 0 16 16"><path d="M8 1.8l5 1.9v3.8c0 3.2-2.1 5.6-5 6.7-2.9-1.1-5-3.5-5-6.7V3.7z" /></svg>
+            <span id="shield-count" hidden></span>
           </button>
           <button id="customize-btn" class="icon-btn" title="Customize" tabindex="-1">
             <svg viewBox="0 0 16 16"><path d="M8 2.2a5.8 5.8 0 1 0 0 11.6c.9 0 1.3-.6 1.3-1.2 0-.8-.6-1-.6-1.7 0-.6.5-1 1.1-1h1.5a2.6 2.6 0 0 0 2.5-2.6C13.8 4.4 11.2 2.2 8 2.2z" /><circle cx="5.2" cy="7.2" r=".7" /><circle cx="7.4" cy="4.9" r=".7" /><circle cx="10.4" cy="5.4" r=".7" /></svg>
@@ -55,19 +64,30 @@
         </div>
       </header>
 
-      <div id="findbar">
-        <div class="find-field">
-          <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.25" /><path d="M10.2 10.2L13.5 13.5" /></svg>
-          <input id="find-input" type="text" placeholder="Find on page" spellcheck="false" autocomplete="off" />
-          <span id="find-count"></span>
+      <nav id="favbar" aria-label="Favorites">
+        <div id="fav-pill" class="pill floating" style="--order: 3">
+          <div id="fav-items"></div>
+          <button id="fav-more" class="icon-btn small" title="More favorites" tabindex="-1" hidden>
+            <svg viewBox="0 0 16 16"><path d="M4 4l4 4-4 4M9 4l4 4-4 4" /></svg>
+          </button>
         </div>
-        <button id="find-prev" class="icon-btn" title="Previous (Shift+Enter)">
-          <svg viewBox="0 0 16 16"><path d="M4 10l4-4 4 4" /></svg>
-        </button>
-        <button id="find-next" class="icon-btn" title="Next (Enter)">
-          <svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg>
-        </button>
-        <button id="find-done" class="text-btn">Done</button>
+      </nav>
+
+      <div id="findbar">
+        <div id="find-pill" class="pill floating" style="--order: 4">
+          <div class="find-field">
+            <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.25" /><path d="M10.2 10.2L13.5 13.5" /></svg>
+            <input id="find-input" type="text" placeholder="Find on page" spellcheck="false" autocomplete="off" />
+            <span id="find-count"></span>
+          </div>
+          <button id="find-prev" class="icon-btn" title="Previous (Shift+Enter)">
+            <svg viewBox="0 0 16 16"><path d="M4 10l4-4 4 4" /></svg>
+          </button>
+          <button id="find-next" class="icon-btn" title="Next (Enter)">
+            <svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" /></svg>
+          </button>
+          <button id="find-done" class="text-btn">Done</button>
+        </div>
       </div>
     </div>
 
@@ -78,9 +98,16 @@
           <span id="address-icon" class="address-icon"></span>
           <span id="address-text"></span>
         </div>
+        <div id="address-status">
+          <span id="address-capture" class="capture" hidden></span>
+          <button id="address-audio" class="tab-audio" tabindex="-1" hidden></button>
+        </div>
         <input id="address-input" type="text" spellcheck="false" autocomplete="off"
-          placeholder="Search DuckDuckGo or enter website name" />
+          placeholder="Search or enter website name" />
         <button id="zoom-pill" class="zoom-pill" title="Reset zoom" tabindex="-1" hidden></button>
+        <button id="star" class="icon-btn small" tabindex="-1" hidden>
+          <svg viewBox="0 0 16 16"><path d="M8 2.5l1.7 3.5 3.8.5-2.8 2.6.7 3.8L8 11.1l-3.4 1.8.7-3.8-2.8-2.6 3.8-.5z" /></svg>
+        </button>
         <button id="reload" class="icon-btn small" title="Reload" tabindex="-1">
           <svg class="i-reload" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7" /><path d="M13 2.5v3h-3" /></svg>
           <svg class="i-stop" viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg>
@@ -90,6 +117,24 @@
     </template>
 
     <div id="scrim"></div>
+
+    <!-- Offered while a tab is dragged down over the page. -->
+    <div id="drag-zones" hidden>
+      <div class="drag-zone" data-zone="left">
+        <svg viewBox="0 0 24 16"><rect x="1" y="1" width="22" height="14" rx="2.5" /><rect class="fill" x="3" y="3" width="8" height="10" rx="1" /></svg>
+        <span>Split left</span>
+      </div>
+      <div class="drag-zone" data-zone="center">
+        <svg viewBox="0 0 16 16"><rect x="2" y="4.5" width="9" height="8.5" rx="2" /><path d="M5 4.5V4a1.5 1.5 0 0 1 1.5-1.5h6A1.5 1.5 0 0 1 14 4v6a1.5 1.5 0 0 1-1.5 1.5H11" /></svg>
+        <span>New window</span>
+      </div>
+      <div class="drag-zone" data-zone="right">
+        <svg viewBox="0 0 24 16"><rect x="1" y="1" width="22" height="14" rx="2.5" /><rect class="fill" x="13" y="3" width="8" height="10" rx="1" /></svg>
+        <span>Split right</span>
+      </div>
+    </div>
+    <div id="drop-marker" hidden></div>
+
     <div id="suggestions" class="panel" hidden></div>
     <div id="downloads-panel" class="panel" hidden>
       <div class="panel-header">
@@ -97,6 +142,33 @@
         <button id="downloads-clear" class="text-btn">Clear</button>
       </div>
       <div id="downloads-list"></div>
+    </div>
+
+    <div id="shield-panel" class="panel" hidden>
+      <div class="panel-header">
+        <span>Protection</span>
+        <span id="shield-total" class="shield-note"></span>
+      </div>
+      <div class="mp-row">
+        <span>Block ads</span>
+        <span id="shield-ads" class="shield-note"></span>
+        <button id="shield-ads-switch" class="switch" role="switch"></button>
+      </div>
+      <div class="mp-row">
+        <span>Block trackers</span>
+        <span id="shield-trackers" class="shield-note"></span>
+        <button id="shield-trackers-switch" class="switch" role="switch"></button>
+      </div>
+      <div class="mp-sep"></div>
+      <div id="shield-site-row" class="mp-row">
+        <span id="shield-site" class="shield-site"></span>
+        <button id="shield-site-switch" class="switch" role="switch" title="Turn off if blocking breaks this site"></button>
+      </div>
+      <div id="shield-status" class="shield-status" hidden></div>
+      <button id="shield-manage" class="mp-item">
+        <svg viewBox="0 0 16 16"><path d="M8 1.8l5 1.9v3.8c0 3.2-2.1 5.6-5 6.7-2.9-1.1-5-3.5-5-6.7V3.7z" /></svg>
+        <span>Allowed Sites and Rules…</span>
+      </button>
     </div>
 
     <div id="menus"></div>
@@ -135,18 +207,50 @@
         <button id="mp-autohide" class="switch" data-action="toggle-autohide" title="Ctrl+Shift+F"></button>
       </div>
       <div class="mp-row">
+        <span>Block ads and trackers</span>
+        <button id="mp-protection" class="switch" data-action="toggle-protection" title="Ctrl+Shift+A"></button>
+      </div>
+      <div class="mp-row">
+        <span>Sleep unused tabs</span>
+        <button id="mp-sleep-tabs" class="switch" data-action="toggle-sleep-tabs" title="Tabs you haven’t used for 30 minutes give back their memory, or 5 minutes if Glasswing is using a lot, and reload when you select them"></button>
+      </div>
+      <div class="mp-row">
+        <span>Split view links open on the right</span>
+        <button id="mp-split-links" class="switch" data-action="toggle-split-links" title="In split view, a link on the left opens on the right. Shift+click opens a new tab, and Alt+click stays on the left."></button>
+      </div>
+      <div class="mp-row">
+        <span>Favorites bar</span>
+        <button id="mp-favbar" class="switch" data-action="toggle-favorites-bar" title="Ctrl+Shift+B"></button>
+      </div>
+      <div class="mp-row">
         <span>Full screen</span>
         <button id="mp-fullscreen" class="switch" data-action="toggle-fullscreen" title="F11"></button>
       </div>
 
       <div class="mp-sep"></div>
+      <button class="mp-item" data-action="new-private-window">
+        <svg viewBox="0 0 16 16"><path d="M2 8.5c1.8-2.6 3.8-3.9 6-3.9s4.2 1.3 6 3.9c-1.8 1.8-3.8 2.7-6 2.7s-4.2-.9-6-2.7z" /><circle cx="8" cy="8" r="1.7" /></svg>
+        <span>New Private Window</span><kbd>Ctrl+Shift+N</kbd>
+      </button>
+      <button class="mp-item" data-action="picture-in-picture">
+        <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2" /><rect x="8" y="8" width="4" height="3" rx=".7" /></svg>
+        <span>Picture in Picture</span><kbd>Alt+P</kbd>
+      </button>
+      <button class="mp-item" data-action="screenshot">
+        <svg viewBox="0 0 16 16"><path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h1.5l1-1.5h3l1 1.5H12a1.5 1.5 0 0 1 1.5 1.5V12a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 12z" /><circle cx="8" cy="8.5" r="2.3" /></svg>
+        <span>Screenshot</span><kbd>Ctrl+Shift+S</kbd>
+      </button>
+      <button class="mp-item" data-action="toggle-split">
+        <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M8 3v10" /></svg>
+        <span id="mp-split-label">Split View</span><kbd>Ctrl+\</kbd>
+      </button>
       <button class="mp-item" data-action="customize">
         <svg viewBox="0 0 16 16"><path d="M8 2.2a5.8 5.8 0 1 0 0 11.6c.9 0 1.3-.6 1.3-1.2 0-.8-.6-1-.6-1.7 0-.6.5-1 1.1-1h1.5a2.6 2.6 0 0 0 2.5-2.6C13.8 4.4 11.2 2.2 8 2.2z" /></svg>
         <span>Appearance</span>
       </button>
       <button class="mp-item" data-action="favorite">
         <svg viewBox="0 0 16 16"><path d="M8 2.5l1.7 3.5 3.8.5-2.8 2.6.7 3.8L8 11.1l-3.4 1.8.7-3.8-2.8-2.6 3.8-.5z" /></svg>
-        <span>Add to Favorites</span><kbd>Ctrl+D</kbd>
+        <span id="mp-favorite-label">Add to Favorites</span><kbd>Ctrl+D</kbd>
       </button>
       <button class="mp-item" data-action="history">
         <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.75" /><path d="M8 5v3.2l2 1.3" /></svg>
@@ -179,6 +283,14 @@
       <button class="mp-item" data-action="devtools">
         <svg viewBox="0 0 16 16"><path d="M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5" /></svg>
         <span>Developer Tools</span><kbd>F12</kbd>
+      </button>
+      <button class="mp-item" data-action="setup">
+        <svg viewBox="0 0 16 16"><path d="M8 2.5v7M5 6.8l3 3 3-3M3 12.8h10" /></svg>
+        <span>Setup and Import…</span>
+      </button>
+      <button class="mp-item" data-action="check-updates">
+        <svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7" /><path d="M13 2.5v3h-3" /></svg>
+        <span>Check for Updates…</span>
       </button>
       <button class="mp-item" data-action="about">
         <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.75" /><path d="M8 7.2v3.6M8 5.2v.01" /></svg>
@@ -229,6 +341,10 @@
       <div class="cz-row">
         <span>Auto-hide toolbar</span>
         <button id="cz-focus" class="switch" role="switch" title="Ctrl+Shift+F"></button>
+      </div>
+      <div class="cz-row">
+        <span>Favorites bar</span>
+        <button id="cz-favbar" class="switch" role="switch" title="Ctrl+Shift+B"></button>
       </div>
       <div class="cz-row">
         <span>Open in full screen</span>

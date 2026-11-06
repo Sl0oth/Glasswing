@@ -1,11 +1,13 @@
 // Context menus and the "⋯" menu. They're described with Electron-style templates but drawn by
 // the toolbar UI in Glasswing's own style (see `showMenu`), not as native OS menus.
 const { Menu, clipboard, shell: electronShell, app } = require('electron')
-const { APP_NAME, EXTENSIONS_URL, PASSWORDS_URL, HISTORY_URL, WEB_STORE_URL, FAVICON_URL } = require('./constants')
+const { APP_NAME, EXTENSIONS_URL, PASSWORDS_URL, HISTORY_URL, PROTECTION_URL, WEB_STORE_URL, FAVICON_URL } = require('./constants')
 const history = require('./history')
-const { searchUrl, isNewTab, isInternal } = require('./url')
+const { searchUrl, resolveInput, isNewTab, isInternal } = require('./url')
 const extensions = require('./extensions')
-const store = require('./store')
+const favorites = require('./favorites')
+const appearance = require('./appearance')
+const search = require('./search')
 
 const isMac = process.platform === 'darwin'
 const accel = (key) => ({ accelerator: key })
@@ -87,7 +89,8 @@ function pageContextMenu(tab, params) {
   if (params.linkURL) {
     items.push(
       { label: 'Open Link in New Tab', click: () => shell.createTab({ url: params.linkURL, active: false, openerId: tab.id }) },
-      { label: 'Open Link in New Window', click: () => shell.constructor.create({ urls: [params.linkURL] }) },
+      { label: 'Open Link in New Window', click: () => shell.newWindow({ urls: [params.linkURL] }) },
+      !shell.private && { label: 'Open Link in Private Window', click: () => shell.constructor.create({ urls: [params.linkURL], private: true }) },
       { label: 'Copy Link', click: () => clipboard.writeText(params.linkURL) },
     )
     sep()
@@ -100,6 +103,11 @@ function pageContextMenu(tab, params) {
       { label: 'Copy Image', click: () => wc.copyImageAt(params.x, params.y) },
       { label: 'Copy Image Address', click: () => clipboard.writeText(params.srcURL) },
     )
+    sep()
+  }
+
+  if (params.mediaType === 'video') {
+    items.push({ label: 'Picture in Picture', ...accel('Alt+P'), click: () => tab.togglePictureInPicture() })
     sep()
   }
 
@@ -119,7 +127,7 @@ function pageContextMenu(tab, params) {
     const text = params.selectionText.trim()
     items.push(
       { label: 'Copy', ...accel('CmdOrCtrl+C'), click: () => wc.copy() },
-      { label: `Search DuckDuckGo for “${truncate(text)}”`, click: () => shell.createTab({ url: searchUrl(text), openerId: tab.id }) },
+      { label: `Search ${search.current().name} for “${truncate(text)}”`, click: () => shell.createTab({ url: searchUrl(text), openerId: tab.id }) },
     )
     sep()
   }
@@ -140,7 +148,7 @@ function pageContextMenu(tab, params) {
   }
 
   try {
-    const extensionItems = extensions.get()?.getContextMenuItems(wc, params) ?? []
+    const extensionItems = shell.private ? [] : extensions.get()?.getContextMenuItems(wc, params) ?? []
     if (extensionItems.length) {
       items.push(...fromMenuItems(extensionItems))
       sep()
@@ -166,7 +174,26 @@ function tabContextMenu(shell, id, x, y) {
     { label: 'Reload', click: () => (tab.ensureLoaded(), wc.reload()) },
     { label: 'Duplicate', click: () => shell.duplicateTab(id) },
     { label: wc.isAudioMuted() ? 'Unmute Tab' : 'Mute Tab', click: () => (wc.setAudioMuted(!wc.isAudioMuted()), shell.tabChanged(tab)) },
-    { label: 'Add to Favorites', enabled: /^https?:/.test(tab.url), click: () => addToFavorites(shell, tab) },
+    { label: 'Copy Address', enabled: !isNewTab(tab.url), click: () => clipboard.writeText(tab.url) },
+    {
+      label: favorites.has(tab.url) ? 'Remove from Favorites' : 'Add to Favorites',
+      enabled: /^https?:/.test(tab.url),
+      click: () => toggleFavorite(shell, tab),
+    },
+    { type: 'separator' },
+    ...(tab.split
+      ? [
+          { label: 'Separate Split View', click: () => shell.unsplit(id) },
+          { label: 'Swap Sides', click: () => shell.swapSplit(id) },
+        ]
+      : [
+          {
+            label: 'Open in Split View',
+            enabled: shell.order.length > 1,
+            click: () => shell.splitWith(id, shell.splitPartnerFor(id), 'right'),
+          },
+        ]),
+    { label: 'Move to New Window', enabled: shell.order.length > 1, click: () => shell.moveToNewWindow(tab) },
     { type: 'separator' },
     { label: 'Close Tab', ...accel('CmdOrCtrl+W'), click: () => shell.closeTab(id) },
     { label: 'Close Other Tabs', enabled: shell.order.length > 1, click: () => shell.closeOtherTabs(id) },
@@ -178,6 +205,7 @@ function tabContextMenu(shell, id, x, y) {
 
 /** Right-click on the + button: the last 10 pages visited, then a way into full history. */
 function newTabButtonMenu(shell, x, y) {
+  if (shell.private) return showMenu(shell, [{ label: 'Private windows don’t keep history', enabled: false }], { x, y })
   const recent = history.recent(10)
   const items = recent.map((entry) => {
     let host = entry.url
@@ -198,34 +226,133 @@ function newTabButtonMenu(shell, x, y) {
   showMenu(shell, items, { x, y })
 }
 
+function faviconFor(url) {
+  try {
+    return FAVICON_URL.replace('%s', encodeURIComponent(new URL(url).hostname.replace(/^www\./, '')))
+  } catch {
+    return null
+  }
+}
+
+/** Right-click on a favorite in the bar. */
+function favoriteContextMenu(shell, url, x, y) {
+  const favorite = favorites.list().find((f) => f.url === url)
+  if (!favorite) return
+  showMenu(shell, [
+    { label: 'Open in New Tab', click: () => shell.createTab({ url }) },
+    { label: 'Open in New Window', click: () => shell.newWindow({ urls: [url] }) },
+    { label: 'Copy Address', click: () => clipboard.writeText(url) },
+    { type: 'separator' },
+    { label: 'Edit…', click: () => editFavorite(shell, favorite) },
+    { label: 'Remove', click: () => favorites.remove(url) },
+  ], { x, y })
+}
+
+async function editFavorite(shell, favorite) {
+  const { button, values } = await require('./prompts').ask(shell, {
+    title: 'Edit Favorite',
+    origin: favorite.url,
+    fields: [
+      { id: 'title', label: 'Name', value: favorite.title },
+      { id: 'url', label: 'Address', value: favorite.url },
+    ],
+    buttons: [
+      { id: 'cancel', label: 'Cancel', style: 'secondary' },
+      { id: 'save', label: 'Save', style: 'primary' },
+    ],
+    cancelId: 'cancel',
+  })
+  if (button !== 'save') return
+  const url = resolveInput(values.url)
+  const saved = favorites.update(favorite.url, { title: String(values.title ?? ''), url })
+  if (!saved) {
+    shell.sendEvent('flash', 'Favorites need a web address')
+    shell.peek()
+  }
+}
+
+/** The » button: favorites that don't fit in the bar. */
+function favoritesOverflowMenu(shell, from, x, y) {
+  const items = favorites.list().slice(from).map((f) => ({
+    label: truncate(f.title || f.url, 48),
+    icon: faviconFor(f.url),
+    click: () => shell.activeTab()?.loadURL(f.url),
+  }))
+  if (items.length) showMenu(shell, items, { x, y })
+}
+
+/** Right-click in a text field of the browser's own UI, such as the address bar. */
+async function inputContextMenu(shell, x, y, { hasSelection = false, isAddress = false } = {}) {
+  const wc = shell.ui.webContents
+  const pasted = await clipboard.readText().catch(() => '')
+  const canPaste = pasted.trim().length > 0
+  if (shell.closed) return
+  const items = [
+    { label: 'Cut', ...accel('CmdOrCtrl+X'), enabled: hasSelection, click: () => wc.cut() },
+    { label: 'Copy', ...accel('CmdOrCtrl+C'), enabled: hasSelection, click: () => wc.copy() },
+    { label: 'Paste', ...accel('CmdOrCtrl+V'), enabled: canPaste, click: () => wc.paste() },
+  ]
+  if (isAddress) {
+    items.push({
+      label: 'Paste and Go',
+      enabled: canPaste,
+      click: () => {
+        shell.activeTab()?.navigate(pasted)
+        shell.focusPage()
+      },
+    })
+  }
+  items.push({ type: 'separator' }, { label: 'Select All', ...accel('CmdOrCtrl+A'), click: () => wc.selectAll() })
+  showMenu(shell, items, { x, y })
+}
+
 /** Actions from the ⋯ panel (the panel itself is drawn by the toolbar UI). */
 function runAction(shell, action) {
   const tab = shell.activeTab()
   const actions = {
     'new-tab': () => shell.createTab(),
-    'new-window': () => shell.constructor.create(),
+    'new-window': () => shell.newWindow(),
+    'new-private-window': () => shell.constructor.create({ private: true }),
+    'picture-in-picture': () => tab?.togglePictureInPicture(),
+    screenshot: () => shell.saveScreenshot(),
+    'toggle-sleep-tabs': () => require('./sleeping-tabs').setEnabled(!require('./sleeping-tabs').enabled()),
+    'toggle-split-links': () => {
+      const store = require('./store')
+      store.set('splitLinks', store.get('splitLinks') === false)
+      shell.constructor.all.forEach((each) => each.scheduleState())
+    },
     find: () => tab && shell.openFind(),
     'zoom-in': () => tab?.zoom(1),
     'zoom-out': () => tab?.zoom(-1),
     'zoom-reset': () => tab?.zoom(0),
     'toggle-autohide': () => shell.toggleFocusMode(),
     'toggle-fullscreen': () => shell.toggleFullScreen(),
-    favorite: () => addToFavorites(shell),
+    favorite: () => toggleFavorite(shell),
+    'toggle-favorites-bar': () => toggleFavoritesBar(),
+    'toggle-split': () => shell.toggleSplit(),
+    'toggle-protection': () => shell.toggleProtection(),
+    protection: () => openOrSelect(shell, PROTECTION_URL),
     'reopen-tab': () => shell.reopenClosedTab(),
     extensions: () => openOrSelect(shell, EXTENSIONS_URL),
-    'web-store': () => shell.createTab({ url: WEB_STORE_URL }),
+    'web-store': () => (shell.private ? openOrSelect(shell, WEB_STORE_URL) : shell.createTab({ url: WEB_STORE_URL })),
     passwords: () => openOrSelect(shell, PASSWORDS_URL),
     history: () => openOrSelect(shell, HISTORY_URL),
     'downloads-folder': () => electronShell.openPath(app.getPath('downloads')),
     print: () => tab?.webContents.print(),
     devtools: () => tab?.toggleDevTools(),
     about: () => about(shell),
+    setup: () => require('./setup').open(),
+    'check-updates': () => require('./updater').checkNow(shell),
     quit: () => app.quit(),
   }
   if (Object.hasOwn(actions, action)) actions[action]()
 }
 
-function openOrSelect(shell, url) {
+function openOrSelect(from, url) {
+  // These pages are about your normal browsing (its history, passwords and extensions), so that's where they open.
+  const shell = from.private ? from.constructor.lastNormal() : from
+  if (!shell) return from.constructor.create({ urls: [url] })
+  if (from.private) shell.focus()
   for (const id of shell.order) {
     if (shell.tabs.get(id).url.startsWith(url)) return shell.selectTab(id)
   }
@@ -234,20 +361,25 @@ function openOrSelect(shell, url) {
   else shell.createTab({ url })
 }
 
-function addToFavorites(shell, tab = shell.activeTab()) {
+/** Adds the page to favorites, or removes it if it's already there. */
+function toggleFavorite(shell, tab = shell.activeTab()) {
   if (!tab || !/^https?:/.test(tab.url)) return
-  const favorites = store.get('favorites')
-  if (!favorites.some((f) => f.url === tab.url)) {
-    store.set('favorites', [...favorites, { title: tab.title, url: tab.url }])
-  }
-  shell.sendEvent('flash', 'Added to Favorites')
+  const removing = favorites.has(tab.url)
+  if (removing) favorites.remove(tab.url)
+  else favorites.add({ title: tab.title, url: tab.url })
+  shell.sendEvent('flash', removing ? 'Removed from Favorites' : 'Added to Favorites')
+  shell.peek()
+}
+
+function toggleFavoritesBar() {
+  appearance.update({ favoritesBar: !appearance.get().favoritesBar })
 }
 
 function about(shell) {
   require('./prompts').ask(shell, {
     title: APP_NAME,
     message: `Version ${app.getVersion()}`,
-    detail: `Chromium ${process.versions.chrome} · Electron ${process.versions.electron}\nSearch by DuckDuckGo`,
+    detail: `Chromium ${process.versions.chrome} · Electron ${process.versions.electron}\nSearch by ${search.current().name}`,
     buttons: [{ id: 'ok', label: 'OK', style: 'primary' }],
     cancelId: 'ok',
   })
@@ -269,7 +401,11 @@ module.exports = {
   newTabButtonMenu,
   runAction,
   selectMenuItem,
-  addToFavorites,
+  toggleFavorite,
+  toggleFavoritesBar,
+  favoriteContextMenu,
+  favoritesOverflowMenu,
+  inputContextMenu,
   applicationMenu,
   openOrSelect,
 }

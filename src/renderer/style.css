@@ -1,5 +1,6 @@
 :root {
-  --toolbar-height: 46px; /* keep in sync with TOOLBAR_HEIGHT in src/main/constants.js */
+  --toolbar-height: 48px; /* keep in sync with TOOLBAR_HEIGHT in src/main/constants.js */
+  --favbar-height: 36px; /* keep in sync with FAVBAR_HEIGHT */
   --findbar-height: 42px; /* keep in sync with FINDBAR_HEIGHT */
 
   --text: rgba(255, 255, 255, 0.92);
@@ -19,8 +20,18 @@
 
   --accent-soft: color-mix(in srgb, var(--accent) 50%, transparent);
   --tab-radius: clamp(4px, calc(var(--radius) * 0.75), 10px);
-  --panel: color-mix(in srgb, color-mix(in srgb, var(--c1) 35%, #1c1c1f) 96%, transparent);
-  --floating: linear-gradient(var(--angle), color-mix(in srgb, var(--c1) 70%, #18181b), color-mix(in srgb, var(--c2) 70%, #18181b));
+  --panel: color-mix(in srgb, var(--c1) 35%, #1c1c1f);
+
+  /* The floating elements sit on top of arbitrary websites, light or dark, and one web view can't
+     blur another. So they're a dark glass that's mostly solid: enough to keep white text readable
+     on a white page, with the page still faintly visible through it. */
+  --glass-base: color-mix(in srgb, var(--c1) 28%, #131316);
+  --glass: color-mix(in srgb, var(--glass-base) 84%, transparent);
+  --glass-hover: color-mix(in srgb, color-mix(in srgb, var(--glass-base) 88%, white) 88%, transparent);
+  --glass-strong: color-mix(in srgb, color-mix(in srgb, var(--glass-base) 92%, white) 94%, transparent);
+  --glass-edge: rgba(255, 255, 255, 0.11);
+  --glass-shadow: 0 2px 10px rgba(0, 0, 0, 0.32);
+  --pill-radius: clamp(8px, calc(var(--radius) + 4px), 17px);
 
   color-scheme: dark;
 }
@@ -65,35 +76,65 @@ svg {
 
 /* ── Chrome container ───────────────────────────────────────────────── */
 
-/* Normally transparent: the tinted window backdrop shows through, seamlessly. */
+/* The container has no background and takes no clicks: only the elements inside it are there. */
 #chrome {
   position: fixed;
   inset: 0 0 auto 0;
   z-index: 10;
+  pointer-events: none;
 }
 
-/* Focus mode & full screen: the toolbar floats over the page and slides in on hover. */
-body.chrome-hidden #chrome {
-  background: var(--floating);
-  box-shadow: 0 1px 0 var(--hairline), 0 10px 30px rgba(0, 0, 0, 0.35);
-  transform: translateY(-100%);
-  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+.floating {
+  pointer-events: auto;
+  transition:
+    transform 0.26s cubic-bezier(0.2, 0.9, 0.25, 1) calc(var(--order, 0) * 28ms),
+    opacity 0.18s ease calc(var(--order, 0) * 28ms);
 }
 
-body.chrome-hidden.revealed #chrome {
-  transform: none;
+/* Auto-hide: everything waits above the top edge and slides down over the page, one after another.
+   Leaving is quicker, with no stagger. Keep it within CONCEAL_ANIMATION_MS. */
+body.chrome-hidden:not(.revealed) .floating {
+  transform: translateY(calc(-1 * (var(--toolbar-height) + var(--favbar-height) + var(--findbar-height))));
+  opacity: 0;
+  transition:
+    transform 0.17s cubic-bezier(0.5, 0, 0.8, 0.4),
+    opacity 0.17s ease;
 }
 
-#reveal-strip {
+@media (prefers-reduced-motion: reduce) {
+  .floating,
+  body.chrome-hidden:not(.revealed) .floating {
+    transition: opacity 0.1s linear;
+  }
+}
+
+/* One element of the toolbar: a small piece of dark glass. */
+.pill {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 0 3px;
+  border-radius: var(--pill-radius);
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--glass-edge), var(--glass-shadow);
+}
+
+#top-progress {
   position: fixed;
-  inset: 0 0 auto 0;
-  height: 6px;
+  top: 0;
+  left: 0;
   z-index: 30;
+  height: 2px;
+  width: 0;
   display: none;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+  pointer-events: none;
 }
 
-body.chrome-hidden:not(.revealed) #reveal-strip {
+body.chrome-hidden:not(.revealed).page-loading #top-progress {
   display: block;
+  animation: progress 9s cubic-bezier(0.08, 0.7, 0.2, 1) forwards;
 }
 
 /* ── Toolbar ────────────────────────────────────────────────────────── */
@@ -103,8 +144,55 @@ body.chrome-hidden:not(.revealed) #reveal-strip {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 max(8px, var(--gap)) 0 max(12px, calc(var(--gap) + 6px));
-  -webkit-app-region: drag;
+  padding: 0 8px;
+  position: relative;
+  -webkit-app-region: drag; /* the gaps between elements still move the window */
+}
+
+/* The strip under the elements is over the page when auto-hide is on, so it belongs to the page. */
+body.chrome-hidden #toolbar::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: calc((var(--toolbar-height) - 34px) / 2);
+  -webkit-app-region: no-drag;
+}
+
+body.expanded #toolbar {
+  -webkit-app-region: no-drag; /* with a dropdown open, a click in a gap just closes it */
+}
+
+/* A drag area still works when its view is shrunk to nothing. With the toolbar off screen, it would
+   sit invisibly over the top of the page, and clicks on the page's buttons would move the window. */
+body.toolbar-away #toolbar {
+  -webkit-app-region: no-drag;
+}
+
+#left-pill,
+#right-pill {
+  flex: none;
+  -webkit-app-region: no-drag;
+}
+
+/* A private window has to be easy to tell apart at a glance. */
+#private-badge {
+  display: none;
+  margin: 0 4px 0 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #7c4dff;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+body.private #private-badge {
+  display: block;
+}
+
+body.private #left-pill,
+body.private #right-pill {
+  background: color-mix(in srgb, #7c4dff 32%, var(--glass));
 }
 
 body.platform-darwin:not(.fullscreen) #toolbar {
@@ -114,7 +202,7 @@ body.platform-darwin:not(.fullscreen) #toolbar {
 .window-controls {
   display: flex;
   gap: 8px;
-  padding-right: 8px;
+  padding: 0 8px 0 9px;
   -webkit-app-region: no-drag;
 }
 
@@ -257,8 +345,9 @@ browser-action-list::part(badge) {
   gap: 6px;
   padding: 0 4px;
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: hidden; /* full toolbar height, so the tabs' shadows have room */
   scrollbar-width: none;
+  pointer-events: none; /* the tabs take clicks; the space around them doesn't */
 }
 
 #tabstrip::-webkit-scrollbar {
@@ -271,19 +360,22 @@ browser-action-list::part(badge) {
   flex: 1 1 150px;
   min-width: 36px;
   max-width: 220px;
-  height: 32px;
+  height: 34px;
   padding: 0 10px;
-  border-radius: var(--tab-radius);
+  border-radius: var(--pill-radius);
   display: flex;
   align-items: center;
   gap: 7px;
-  color: var(--text-dim);
+  background: var(--glass);
+  box-shadow: inset 0 0 0 1px var(--glass-edge), var(--glass-shadow);
+  color: rgba(255, 255, 255, 0.72);
+  pointer-events: auto;
   -webkit-app-region: no-drag;
   transition: background-color 0.15s, color 0.15s, box-shadow 0.15s;
 }
 
 .tab:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--glass-hover);
   color: var(--text);
 }
 
@@ -292,29 +384,33 @@ browser-action-list::part(badge) {
   min-width: 240px;
   max-width: 680px;
   padding: 0;
-  background: rgba(255, 255, 255, 0.13);
+  background: var(--glass-strong);
   color: var(--text);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
-    0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 .tab.active.editing {
-  background: rgba(255, 255, 255, 0.16);
-  box-shadow: 0 0 0 2px var(--accent-soft), 0 1px 3px rgba(0, 0, 0, 0.25);
+  background: var(--glass-strong);
+  box-shadow: inset 0 0 0 1.5px var(--accent), var(--glass-shadow);
 }
 
 .tab.dragging {
   z-index: 2;
-  background: var(--fill-3);
+  background: var(--glass-strong);
   transition: none;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
 }
 
 .tab.active > .tab-icon,
 .tab.active > .tab-title,
+.tab.active > .capture,
 .tab.active > .tab-audio {
   display: none;
+}
+
+/* Asleep: it reloads when selected. */
+.tab.sleeping > .tab-icon,
+.tab.sleeping > .tab-title {
+  opacity: 0.5;
 }
 
 .tab-icon {
@@ -370,6 +466,26 @@ browser-action-list::part(badge) {
 .tab-audio svg {
   width: 13px;
   height: 13px;
+}
+
+.tab-audio[hidden],
+.capture[hidden] {
+  display: none;
+}
+
+/* Red, like a recording light: this one is meant to be noticed. */
+.capture {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: #ff453a;
+}
+
+.capture svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 1.5;
 }
 
 .tab-close {
@@ -429,6 +545,12 @@ body.single-tab .tab-close,
   .tab-audio {
     display: none;
   }
+
+  /* No room for everything, and a tab that's recording should still say so. */
+  .tab:has(> .capture:not([hidden])) > .tab-icon,
+  .capture svg + svg {
+    display: none;
+  }
 }
 
 @keyframes spin {
@@ -452,7 +574,7 @@ body.single-tab .tab-close,
   flex: 1;
   min-width: 0;
   height: 100%;
-  padding: 0 64px;
+  padding: 0 62px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -549,9 +671,53 @@ body.single-tab .tab-close,
   display: block;
 }
 
+#address:has(#zoom-pill:not([hidden])) #address-display,
+#address:has(#address-status > :not([hidden])) #address-display {
+  padding: 0 104px;
+}
+
+/* Clear of the close button, which appears at the left edge on hover. */
+#address-status {
+  position: absolute;
+  left: 30px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+#address.editing #address-status {
+  display: none;
+}
+
+#star {
+  position: absolute;
+  right: 30px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+#star svg {
+  width: 14px;
+  height: 14px;
+}
+
+#star.on {
+  color: #ffcc00;
+}
+
+#star.on svg {
+  fill: currentColor;
+}
+
+#address.editing #star {
+  display: none;
+}
+
 .zoom-pill {
   position: absolute;
-  right: 34px;
+  right: 58px;
   top: 50%;
   transform: translateY(-50%);
   padding: 2px 6px;
@@ -603,6 +769,90 @@ body.single-tab .tab-close,
   }
 }
 
+/* ── Favorites bar ──────────────────────────────────────────────────── */
+
+#favbar {
+  height: var(--favbar-height);
+  display: none;
+  justify-content: center;
+  padding: 0 8px;
+}
+
+body.favbar-open #favbar {
+  display: flex;
+}
+
+#fav-pill {
+  height: 30px;
+  min-width: 0;
+  max-width: 100%;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+#fav-items {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fav-item {
+  flex: none;
+  max-width: 150px;
+  height: 24px;
+  padding: 0 9px 0 7px;
+  border: 0;
+  border-radius: calc(var(--pill-radius) - 4px);
+  background: transparent;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  transition: background-color 0.12s;
+}
+
+.fav-item:hover {
+  background: var(--fill-2);
+}
+
+.fav-item.dragging {
+  position: relative;
+  z-index: 2;
+  background: var(--fill-3);
+  transition: none;
+}
+
+.fav-item .fav-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--text-dim);
+}
+
+.fav-item .fav-icon img {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+  border-radius: 3px;
+  filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.55)); /* keeps dark icons visible on dark glass */
+}
+
+.fav-item .fav-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.fav-item .fav-title {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* ── Find bar ───────────────────────────────────────────────────────── */
 
 #findbar {
@@ -610,9 +860,13 @@ body.single-tab .tab-close,
   display: none;
   align-items: center;
   justify-content: flex-end;
-  gap: 4px;
-  padding: 0 12px 8px;
+  padding: 0 8px 8px;
   -webkit-app-region: no-drag;
+}
+
+#find-pill {
+  gap: 2px;
+  padding-right: 4px;
 }
 
 body.find-open #findbar {
@@ -623,16 +877,16 @@ body.find-open #findbar {
   display: flex;
   align-items: center;
   gap: 7px;
-  width: 320px;
-  height: 30px;
+  width: min(320px, calc(100vw - 160px));
+  height: 28px;
   padding: 0 10px;
-  border-radius: 8px;
-  background: var(--fill-2);
+  border-radius: calc(var(--pill-radius) - 3px);
+  background: var(--fill-1);
   color: var(--text-dim);
 }
 
 .find-field:focus-within {
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
 .find-field svg {
@@ -1005,6 +1259,11 @@ input[type='color']::-webkit-color-swatch {
   height: 30px;
 }
 
+body.chrome-hidden .cz-slider:has(#cz-gap) {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 .cz-slider output {
   text-align: right;
   font-size: 11.5px;
@@ -1192,8 +1451,16 @@ input[type='range']::-webkit-slider-thumb {
   width: 340px;
 }
 
+body.favbar-open #prompts {
+  top: calc(var(--toolbar-height) + var(--favbar-height) + 8px);
+}
+
 body.find-open #prompts {
   top: calc(var(--toolbar-height) + var(--findbar-height) + 8px);
+}
+
+body.favbar-open.find-open #prompts {
+  top: calc(var(--toolbar-height) + var(--favbar-height) + var(--findbar-height) + 8px);
 }
 
 body.chrome-hidden:not(.revealed) #prompts {
@@ -1299,6 +1566,33 @@ body.chrome-hidden:not(.revealed) #prompts {
 .prompt-check input {
   accent-color: var(--accent);
   margin: 0;
+}
+
+.prompt-field {
+  display: block;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.prompt-field input {
+  display: block;
+  width: 100%;
+  height: 32px;
+  margin-top: 5px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  outline: 0;
+  background: var(--fill-1);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  user-select: text;
+}
+
+.prompt-field input:focus {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
 .prompt-buttons {
@@ -1516,5 +1810,150 @@ body.chrome-hidden:not(.revealed) #prompts {
   width: 14px;
   height: 14px;
   stroke-width: 1.5;
+  color: var(--text-dim);
+}
+
+/* ── Dragging tabs out, and split view ──────────────────────────────── */
+
+.tab.pulled-out {
+  opacity: 0.35;
+}
+
+/* The two sides of a split view read as one piece in the tab strip. */
+.tab.split-left {
+  margin-right: -4px;
+  border-top-right-radius: 4px;
+  border-bottom-right-radius: 4px;
+}
+
+.tab.split-right {
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
+}
+
+.tab.split-visible:not(.active) {
+  background: var(--glass-strong);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--accent-soft), var(--glass-shadow);
+}
+
+#drag-zones {
+  position: fixed;
+  inset: var(--toolbar-height) 8px 8px 8px;
+  z-index: 15;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  pointer-events: none;
+  animation: panel-in 0.12s ease-out;
+}
+
+.drag-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: clamp(10px, calc(var(--radius) + 4px), 20px);
+  background: color-mix(in srgb, var(--glass-base) 62%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--glass-edge);
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.1s, color 0.1s, box-shadow 0.1s;
+}
+
+.drag-zone svg {
+  width: 36px;
+  height: 24px;
+  stroke-width: 1;
+}
+
+.drag-zone[data-zone='center'] svg {
+  width: 26px;
+  height: 26px;
+}
+
+.drag-zone .fill {
+  fill: currentColor;
+  stroke: none;
+}
+
+.drag-zone.over {
+  background: color-mix(in srgb, var(--accent) 50%, var(--glass-base));
+  box-shadow: inset 0 0 0 2px var(--accent);
+  color: #fff;
+}
+
+#drop-marker {
+  position: fixed;
+  top: 7px;
+  z-index: 16;
+  width: 3px;
+  height: 34px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  pointer-events: none;
+}
+
+body.drop-target .tab.active {
+  box-shadow: inset 0 0 0 1.5px var(--accent-soft), var(--glass-shadow);
+}
+
+/* ── Ad and tracker blocking ────────────────────────────────────────── */
+
+#shield-btn:not(.off) svg {
+  color: var(--accent);
+}
+
+#shield-btn.off svg {
+  opacity: 0.55;
+}
+
+#shield-count {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 13px;
+  text-align: center;
+  pointer-events: none;
+}
+
+#shield-panel {
+  width: 280px;
+  padding: 8px;
+}
+
+#shield-panel .mp-row > span:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.shield-note {
+  margin-right: 10px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.shield-site {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.shield-status {
+  padding: 6px 10px 4px;
+  font-size: 11.5px;
   color: var(--text-dim);
 }

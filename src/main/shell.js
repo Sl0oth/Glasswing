@@ -43,6 +43,7 @@ const blocker = require('./blocker')
 const search = require('./search')
 const store = require('./store')
 const sleepingTabs = require('./sleeping-tabs')
+const animations = require('./animations')
 const { uniquePath } = require('./downloads')
 
 const isMac = process.platform === 'darwin'
@@ -99,7 +100,23 @@ class BrowserShell {
   static saveSession() {
     const windows = [...BrowserShell.all].filter((shell) => !shell.private).map((shell) => shell.serialize())
     // Only private windows open: what's saved already is still the session to come back to.
-    if (windows.length) store.set('session', { windows })
+    if (!windows.length) return
+    const saved = { windows }
+    if (JSON.stringify(saved) !== JSON.stringify(store.get('session'))) store.set('session', saved)
+  }
+
+  /** So a crash brings back what you had open, not what you had open the last time you quit. */
+  static keepSessionSaved(every = 15_000) {
+    const timer = setInterval(() => {
+      if (BrowserShell.quitting) return
+      try {
+        BrowserShell.saveSession()
+      } catch (err) {
+        console.error('Could not save the open tabs:', err)
+      }
+    }, every)
+    timer.unref?.()
+    return timer
   }
 
   constructor({ urls, tabs, activeIndex = 0, bounds, maximized = false, splits, adoptTab, fullscreen, private: isPrivate = false } = {}) {
@@ -357,20 +374,43 @@ class BrowserShell {
       if (this.closedTabs.length > 25) this.closedTabs.shift()
     }
 
+    const onScreen = this.shownTabs.includes(tab) && !this.htmlFullscreen && this.order.length > 1 && !tab.webContents.isDestroyed()
     this.releaseTab(tab)
 
     try {
       if (!this.private) extensions.get()?.removeTab(tab.webContents)
     } catch {}
-    tab.destroy()
+    if (onScreen && animations.enabled()) {
+      // It drops away over the page taking its place, without holding anything up.
+      tab.webContents.setAudioMuted(true)
+      this.slideAway(tab, 0, tab.view.getBounds().height, () => tab.destroy())
+    } else {
+      tab.destroy()
+    }
 
     this.closeIfEmpty()
     if (!this.closed) this.scheduleState()
   }
 
+  /** A page leaving the window slides off over whatever's replacing it, and is then taken out. */
+  slideAway(tab, dx, dy, done) {
+    const { contentView } = this.win
+    contentView.addChildView(tab.view)
+    contentView.addChildView(this.ui)
+    tab.slideOut(dx, dy, () => {
+      if (!this.win.isDestroyed() && !this.shownTabs.includes(tab)) contentView.removeChildView(tab.view)
+      done?.()
+    })
+  }
+
   /** Takes a tab out of this window, without closing its page. Another tab takes its place. */
   releaseTab(tab) {
     const id = tab.id
+    if (tab.stopSlide) {
+      tab.stopSlide() // it may have been on its way out of view
+      tab.stopSlide = null
+      if (!this.shownTabs.includes(tab) && !this.win.isDestroyed()) this.win.contentView.removeChildView(tab.view)
+    }
     const index = this.order.indexOf(id)
     const partner = this.partnerOf(tab)
     this.clearSplit(tab)
@@ -517,30 +557,50 @@ class BrowserShell {
   /** Shows `id` on one side of the window and `partnerId` on the other, with `id` in focus. */
   splitWith(id, partnerId, side = 'right') {
     if (id === partnerId || !this.tabs.has(id) || !this.tabs.has(partnerId)) return
+    const shownBefore = [...this.shownTabs]
     if (side === 'left') this.setSplit(id, partnerId)
     else this.setSplit(partnerId, id)
     if (this.activeId === id) this.syncViews()
     else this.selectTab(id)
     this.layout()
     this.scheduleState()
+
+    // Whichever page is new to the window comes in from its own side.
+    const { width } = this.win.getContentBounds()
+    for (const tab of this.visibleTabs()) {
+      if (shownBefore.includes(tab) || !tab.rest) continue
+      tab.slideIn(tab.split?.left === tab.id ? -(tab.rest.x + tab.rest.width) : width - tab.rest.x)
+    }
   }
 
   unsplit(id = this.activeId) {
     const tab = this.tabs.get(id)
     if (!tab?.split) return
+    const shownBefore = [...this.shownTabs]
+    const leftBefore = tab.split.left
     this.clearSplit(tab)
     this.syncViews()
     this.layout()
     this.scheduleState()
+
+    // The page that's no longer on screen goes back out through its own side.
+    const { width } = this.win.getContentBounds()
+    for (const gone of shownBefore) {
+      if (this.shownTabs.includes(gone)) continue
+      const bounds = gone.view.getBounds()
+      this.slideAway(gone, gone.id === leftBefore ? -(bounds.x + bounds.width) : width - bounds.x, 0)
+    }
   }
 
   swapSplit(id = this.activeId) {
     const split = this.tabs.get(id)?.split
     if (!split) return
+    const before = this.shownTabs.map((tab) => [tab, tab.view.getBounds().x])
     ;[split.left, split.right] = [split.right, split.left]
     this.keepSplitsTogether()
     this.layout()
     this.scheduleState()
+    for (const [tab, x] of before) if (tab.rest) tab.slideIn(x - tab.rest.x)
   }
 
   /** Split View from the menu or keyboard: on with the most recent tab, or a new one; off if it's on. */
@@ -601,6 +661,8 @@ class BrowserShell {
       tab.lastSeen = Date.now()
     }
     for (const tab of next) {
+      tab.stopSlide?.() // back on screen partway through leaving it
+      tab.stopSlide = null
       this.win.contentView.addChildView(tab.view)
       tab.ensureLoaded()
     }
@@ -701,9 +763,9 @@ class BrowserShell {
 
     if (this.htmlFullscreen) {
       tab?.view.setBorderRadius(0)
-      tab?.view.setBounds({ x: 0, y: 0, width, height })
+      tab?.place({ x: 0, y: 0, width, height })
       for (const other of this.shownTabs) {
-        if (other !== tab) other.view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+        if (other !== tab) other.place({ x: 0, y: 0, width: 0, height: 0 })
       }
       // Prompts and right-click menus still have to appear over a full-screen video.
       this.ui.setBounds({ x: 0, y: 0, width, height: this.uiExpanded ? height : 0 })
@@ -730,7 +792,7 @@ class BrowserShell {
     } else {
       this.splitArea = null
       tab?.view.setBorderRadius(radius)
-      tab?.view.setBounds(card)
+      tab?.place(card)
       this.sendBackdrop('layout', { card, radius, split: null })
     }
 
@@ -762,9 +824,9 @@ class BrowserShell {
       height: area.height,
     }
     left.view.setBorderRadius(radius)
-    left.view.setBounds(leftRect)
+    left.place(leftRect)
     right.view.setBorderRadius(radius)
-    right.view.setBounds(rightRect)
+    right.place(rightRect)
     this.splitArea = area
     this.sendBackdrop('layout', {
       card: area,
@@ -1030,6 +1092,7 @@ class BrowserShell {
     return {
       private: this.private,
       sleepTabs: sleepingTabs.enabled(),
+      splitLinks: store.get('splitLinks') !== false,
       tabs: this.order.map((id) => this.tabs.get(id).state()),
       activeId: this.activeId,
       chromeHidden: this.isChromeHidden(),
@@ -1054,6 +1117,7 @@ class BrowserShell {
       this.stateQueued = false
       if (this.win.isDestroyed() || this.ui.webContents.isDestroyed()) return
       this.ui.webContents.send('ui:state', this.getState())
+      for (const tab of this.tabs.values()) tab.reportLinksAcross()
     })
   }
 

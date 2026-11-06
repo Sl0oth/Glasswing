@@ -316,6 +316,11 @@ function runAction(shell, action) {
     'picture-in-picture': () => tab?.togglePictureInPicture(),
     screenshot: () => shell.saveScreenshot(),
     'toggle-sleep-tabs': () => require('./sleeping-tabs').setEnabled(!require('./sleeping-tabs').enabled()),
+    'toggle-split-links': () => {
+      const store = require('./store')
+      store.set('splitLinks', store.get('splitLinks') === false)
+      shell.constructor.all.forEach((each) => each.scheduleState())
+    },
     find: () => tab && shell.openFind(),
     'zoom-in': () => tab?.zoom(1),
     'zoom-out': () => tab?.zoom(-1),

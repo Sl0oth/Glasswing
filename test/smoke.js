@@ -9,7 +9,7 @@
 //   npm test -- --window-states --shots=some/folder    also saves pictures of each state
 //
 // Exits non-zero if a check fails, or if anything logs an error along the way.
-const { app, BrowserWindow, clipboard, nativeImage } = require('electron')
+const { app, BrowserWindow, clipboard, nativeImage, systemPreferences } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -30,6 +30,10 @@ app.commandLine.appendSwitch('use-fake-device-for-media-stream')
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 app.disableHardwareAcceleration()
 BrowserWindow.prototype.focus = () => {}
+const showWithoutFocus = BrowserWindow.prototype.showInactive
+// Most checks look at where things end up, so movement is off apart from the part of the test that's about it.
+let reducedMotion = true
+systemPreferences.getAnimationSettings = () => ({ prefersReducedMotion: reducedMotion })
 if (!testWindowStates) {
   BrowserWindow.prototype.show = () => {}
   BrowserWindow.prototype.showInactive = () => {}
@@ -82,6 +86,30 @@ const server = http.createServer((req, res) => {
     res.statusCode = 303
     res.setHeader('location', '/after-form')
     return res.end()
+  }
+  if (url.pathname === '/split-links') {
+    const at = (n) => `style="position:absolute;left:20px;top:${140 + n * 30}px"`
+    return res.end(page('Split links', '#fff', `
+      <a id="plain" ${at(0)} href="/landed-plain">plain</a>
+      <a id="blank" ${at(1)} target="_blank" href="/landed-blank">blank</a>
+      <a id="hash" ${at(2)} href="#jump">hash</a>
+      <a id="spa" ${at(3)} href="/landed-spa">spa</a>
+      <a id="menu" ${at(4)} href="/landed-menu" aria-haspopup="true">menu</a>
+      <a id="inner" ${at(5)} href="/landed-inner"><button id="inner-button">inside</button></a>
+      <a id="next" ${at(6)} rel="next" href="/landed-next">next</a>
+      <a id="shift" ${at(7)} href="/landed-shift">shift</a>
+      <a id="ctrl" ${at(8)} href="/landed-ctrl">ctrl</a>
+      <a id="alt" ${at(9)} href="/landed-alt">alt</a>
+      <div id="host" ${at(10)}></div>
+      <script>
+        document.getElementById('spa').addEventListener('click', (e) => { e.preventDefault(); window.pageHandled = 'spa' })
+        document.getElementById('menu').addEventListener('click', (e) => { e.preventDefault(); window.pageHandled = 'menu' })
+        document.getElementById('inner-button').addEventListener('click', (e) => { e.preventDefault(); window.pageHandled = 'inner' })
+        document.getElementById('host').attachShadow({ mode: 'open' }).innerHTML = '<a id="shadow" href="/landed-shadow">shadow</a>'
+      </script>`))
+  }
+  if (url.pathname === '/refuses-to-leave') {
+    return res.end(page('Refuses', '#fff', `<script>addEventListener('beforeunload', (e) => { e.preventDefault(); e.returnValue = '' })</script>`))
   }
   if (url.pathname === '/dark') return res.end(page('Dark page', '#101014'))
   if (url.pathname === '/slow') return setTimeout(() => res.end(page('Slow page', '#fff')), 1200)
@@ -542,6 +570,340 @@ async function run() {
   equal('split view with one tab opens a new one beside it', [only.order.length, only.visibleTabs().length], [2, 2])
   only.win.close()
   await until(() => !BrowserShell.all.has(only))
+
+  console.log('\nLinks in split view')
+  {
+    const pair = BrowserShell.create({ urls: [`${base}/split-links`, `${base}/right-side`], fullscreen: false })
+    // Real clicks only reach a page in a window that's been shown, so this one is, far off every screen and without focus.
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(300)
+    const [left, right] = pair.order.map((id) => pair.tabs.get(id))
+    pair.selectTab(right.id)
+    await until(() => !left.webContents.isLoading() && !right.webContents.isLoading() && left.webContents.getURL() && right.webContents.getURL())
+    await wait(200)
+    const home = () => load(left, `${base}/split-links`)
+    const setRight = (url) => load(right, url)
+    const opened = () => pair.order.map((id) => pair.tabs.get(id)).filter((t) => t !== left && t !== right)
+    const closeOthers = () => opened().forEach((t) => pair.closeTab(t.id))
+    pair.splitWith(left.id, right.id, 'left')
+    pair.layout()
+    await wait(150)
+
+    // Real clicks, the kind a page can't fake.
+    const pressAt = async (target, { x, y }, modifiers = []) => {
+      const { debugger: cdp } = target.webContents
+      if (!cdp.isAttached()) cdp.attach('1.3')
+      const held = modifiers.reduce((sum, key) => sum + { alt: 1, control: 2, shift: 8 }[key], 0)
+      const mouse = (type) => cdp.sendCommand('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1, modifiers: held })
+      await mouse('mousePressed')
+      await mouse('mouseReleased')
+    }
+    const spot = (target, selector) => target.webContents.executeJavaScript(`(() => { const r = (${selector}).getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) } })()`)
+    const click = async (id, modifiers) => pressAt(left, await spot(left, `document.getElementById('${id}')`), modifiers)
+    const leftPath = () => new URL(left.webContents.getURL()).pathname
+    const rightPath = () => new URL(right.webContents.getURL()).pathname
+
+    await click('plain')
+    check('a link on the left opens on the right', await until(() => rightPath() === '/landed-plain', 3000), rightPath())
+    equal('and the left stays where it was', leftPath(), '/split-links')
+    equal('with the left still the side in use', pair.activeId, left.id)
+    equal('and no extra tab', pair.order.length, 2)
+    await until(() => !right.webContents.isLoading())
+    await setRight(`${base}/split-right-links`)
+    await right.webContents.executeJavaScript(`document.body.insertAdjacentHTML('beforeend', '<a id="back" style="position:absolute;left:20px;top:140px" href="/stays-right">x</a>'); 1`)
+    await pressAt(right, await spot(right, `document.getElementById('back')`))
+    check('a link on the right stays on the right', await until(() => rightPath() === '/stays-right', 3000), rightPath())
+    equal('leaving the left alone', leftPath(), '/split-links')
+    await until(() => !right.webContents.isLoading())
+
+    await click('blank')
+    check('so does one that would open a new tab', await until(() => rightPath() === '/landed-blank', 3000), rightPath())
+    equal('with no new tab', pair.order.length, 2)
+    await until(() => !right.webContents.isLoading())
+
+    await click('spa')
+    check('so does one the site would handle by itself', await until(() => rightPath() === '/landed-spa', 3000), rightPath())
+    equal('before the site can act on it', await left.webContents.executeJavaScript(`window.pageHandled ?? null`), null)
+    await until(() => !right.webContents.isLoading())
+
+    const inShadow = await spot(left, `document.getElementById('host').shadowRoot.getElementById('shadow')`)
+    await pressAt(left, inShadow)
+    check('and one in a shadow DOM', await until(() => rightPath() === '/landed-shadow', 3000), rightPath())
+    await until(() => !right.webContents.isLoading())
+
+    const stillOnRight = rightPath()
+    await click('hash')
+    check('a jump within the page stays here', await until(() => left.webContents.getURL().endsWith('#jump'), 3000), left.webContents.getURL())
+    await home()
+    await click('menu')
+    check('a link that opens a menu acts as one', await until(() => left.webContents.executeJavaScript(`window.pageHandled === 'menu'`), 3000))
+    await click('inner-button')
+    check('a button inside a link stays a button', await until(() => left.webContents.executeJavaScript(`window.pageHandled === 'inner'`), 3000))
+    await click('next')
+    check('the next page of a list stays on the list\'s side', await until(() => leftPath() === '/landed-next', 3000), leftPath())
+    await home()
+    equal('none of those touched the right', rightPath(), stillOnRight)
+
+    await left.webContents.executeJavaScript(`document.getElementById('plain').click(); 1`)
+    check('a click the page made up isn\'t treated as yours', await until(() => leftPath() === '/landed-plain', 3000), leftPath())
+    equal('and the right is left alone', rightPath(), stillOnRight)
+    await home()
+
+    await click('shift', ['shift'])
+    check('Shift+click makes a whole new tab', await until(() => opened().some((t) => t.url.endsWith('/landed-shift')), 3000), JSON.stringify(opened().map((t) => t.url)))
+    equal('and shows it', pair.activeId, opened()[0]?.id)
+    equal('leaving the right as it was', rightPath(), stillOnRight)
+    equal('and only one window more', [...BrowserShell.all].filter((s) => s === pair).length, 1)
+    closeOthers()
+    pair.selectTab(left.id)
+    await wait(100)
+    await click('ctrl', ['control'])
+    check('Ctrl+click makes a tab behind this one', await until(() => opened().some((t) => t.url.endsWith('/landed-ctrl')), 3000))
+    equal('and stays here', pair.activeId, left.id)
+    closeOthers()
+    await wait(100)
+    await click('alt', ['alt'])
+    check('Alt+click stays on this side', await until(() => leftPath() === '/landed-alt', 3000), leftPath())
+    equal('and leaves the right alone', rightPath(), stillOnRight)
+    await home()
+
+    // Loading a page gives it the keyboard. Real focus can't happen in a hidden window, so it's stood in for here.
+    {
+      const rightWc = right.webContents
+      const leftWc = left.webContents
+      const realFocused = rightWc.isFocused
+      const realFocus = leftWc.focus
+      let focused = true
+      let takenBack = 0
+      rightWc.isFocused = () => focused
+      leftWc.focus = () => { takenBack += 1 }
+      const mouseDown = { type: 'mouseDown' }
+      left.keepFocusFrom(right)
+      equal('the side you clicked gets the keyboard back', takenBack, 1)
+      rightWc.emit('focus')
+      equal('and again if the new page takes it as it loads', takenBack, 2)
+      focused = false
+      rightWc.emit('focus')
+      equal('but not if the keyboard has gone somewhere else, like the address bar', takenBack, 2)
+      focused = true
+      rightWc.emit('input-event', {}, mouseDown)
+      rightWc.emit('focus')
+      rightWc.emit('did-stop-loading')
+      equal('nor once you\'ve used that page yourself', takenBack, 2)
+      left.keepFocusFrom(right)
+      takenBack = 0
+      rightWc.emit('did-stop-loading')
+      equal('it checks one last time when the page finishes', takenBack, 1)
+      rightWc.emit('focus')
+      equal('and then stops', takenBack, 1)
+      rightWc.isFocused = realFocused
+      leftWc.focus = realFocus
+    }
+
+    await right.webContents.executeJavaScript(`document.body.insertAdjacentHTML('beforeend', '<textarea id=t></textarea>'); document.getElementById('t').value = 'half a message'; 1`)
+    await click('plain')
+    check('with text typed on the right, the link opens here instead', await until(() => leftPath() === '/landed-plain', 3000), leftPath())
+    equal('and your text is still there', await right.webContents.executeJavaScript(`document.getElementById('t').value`), 'half a message')
+    await home()
+    await right.webContents.executeJavaScript(`document.getElementById('t').remove(); document.body.insertAdjacentHTML('beforeend', '<input name="q" id="q">'); document.getElementById('q').value = 'cats'; 1`)
+    await click('plain')
+    check('a search box holding your search doesn\'t count', await until(() => rightPath() === '/landed-plain', 3000), rightPath())
+    await until(() => !right.webContents.isLoading())
+
+    const realAudible = right.webContents.isCurrentlyAudible
+    right.webContents.isCurrentlyAudible = () => true
+    await click('plain')
+    check('with sound playing on the right, the link opens here instead', await until(() => leftPath() === '/landed-plain', 3000), leftPath())
+    right.webContents.isCurrentlyAudible = realAudible
+    await home()
+
+    await setRight(`${base}/refuses-to-leave`)
+    await right.webContents.executeJavaScript(`document.body.insertAdjacentHTML('beforeend', '<button id="b" style="position:absolute;left:20px;top:140px">b</button>'); 1`)
+    await pressAt(right, await spot(right, `document.getElementById('b')`))
+    await wait(100)
+    await click('plain')
+    check('a page on the right that refuses to be left doesn\'t swallow the click', await until(() => leftPath() === '/landed-plain' || rightPath() === '/landed-plain', 4000), `${leftPath()} ${rightPath()}`)
+    right.webContents.on('will-prevent-unload', (e) => e.preventDefault())
+    await home()
+    await setRight(`${base}/right-side`)
+
+    menus.runAction(pair, 'toggle-split-links')
+    await wait(50)
+    await click('plain')
+    check('the switch turns it off', await until(() => leftPath() === '/landed-plain', 3000), leftPath())
+    equal('and the right stays', rightPath(), '/right-side')
+    menus.runAction(pair, 'toggle-split-links')
+    equal('and back on', pair.getState().splitLinks, true)
+    check('the ⋯ panel has the switch', await ui(pair, `Boolean(document.getElementById('mp-split-links'))`))
+    await home()
+
+    pair.swapSplit()
+    await wait(50)
+    await pressAt(left, await spot(left, `document.getElementById('plain')`))
+    check('swapping sides swaps which side sends links', await until(() => leftPath() === '/landed-plain', 3000), leftPath())
+    pair.swapSplit()
+    await home()
+
+    pair.unsplit()
+    await wait(100)
+    pair.selectTab(left.id)
+    await wait(100)
+    await click('plain')
+    check('outside split view, links open as normal', await until(() => leftPath() === '/landed-plain', 3000), leftPath())
+    await home()
+    await click('shift', ['shift'])
+    check('Shift+click makes a tab there too', await until(() => opened().some((t) => t.url.endsWith('/landed-shift')), 3000))
+    closeOthers()
+    await home()
+    const before = BrowserWindow.getAllWindows().length
+    await left.webContents.executeJavaScript(`window.open('${base}/popup', '_blank', 'popup,width=400,height=400'); 1`, true)
+    check('a sign-in style popup is still a real window', await until(() => BrowserWindow.getAllWindows().length === before + 1, 3000))
+    for (const w of BrowserWindow.getAllWindows()) if (![...BrowserShell.all].some((s) => s.win === w)) w.destroy()
+
+    pair.win.close()
+    await until(() => !BrowserShell.all.has(pair))
+  }
+
+  console.log('\nAnimations')
+  {
+    reducedMotion = false
+    const { SLIDE_MS } = require(path.join(REPO, 'src/main/animations.js'))
+    const settled = () => wait(SLIDE_MS + 80)
+    const stage = BrowserShell.create({ urls: [`${base}/a-one`, `${base}/a-two`, `${base}/a-three`], fullscreen: false })
+    await until(() => stage.order.every((id) => stage.tabs.get(id).webContents.getURL() || stage.tabs.get(id).pendingUrl))
+    const [one, two, three] = stage.order.map((id) => stage.tabs.get(id))
+    stage.selectTab(two.id)
+    await until(() => !two.webContents.isLoading() && two.webContents.getURL())
+    await wait(100)
+    const inWindow = (t) => stage.win.contentView.children.includes(t.view)
+    const topOfWindow = () => stage.win.contentView.children.at(-1)
+
+    // Closing a tab
+    const closingHeight = two.view.getBounds().height
+    const closingY = two.view.getBounds().y
+    stage.closeTab(two.id)
+    equal('the tab is gone at once', stage.tabs.has(two.id), false)
+    check('and something else is selected at once', stage.activeId != null && stage.activeId !== two.id)
+    check('the new page is on screen at once', stage.shownTabs.includes(stage.activeTab()) && inWindow(stage.activeTab()))
+    equal('the closing page goes quiet at once', two.webContents.isAudioMuted(), true)
+    check('and stays on screen to slide away', inWindow(two))
+    equal('with the toolbar still on top', topOfWindow(), stage.ui)
+    const children = stage.win.contentView.children
+    check('over the new page', children.indexOf(two.view) > children.indexOf(stage.activeTab().view))
+    await wait(SLIDE_MS / 2)
+    check('it moves without changing size', two.view.getBounds().height === closingHeight && two.view.getBounds().y > closingY, JSON.stringify(two.view.getBounds()))
+    check('it\'s gone soon after', await until(() => two.webContents.isDestroyed() && !inWindow(two), SLIDE_MS + 500))
+
+    // Closing a tab that isn't on screen
+    const background = stage.createTab({ url: `${base}/a-background`, active: false })
+    await until(() => !background.webContents.isLoading())
+    stage.closeTab(background.id)
+    check('a tab off screen just closes', await until(() => background.webContents.isDestroyed(), 100))
+
+    // Going into split view
+    stage.selectTab(one.id)
+    await wait(50)
+    stage.splitWith(three.id, one.id, 'right')
+    const landed = three.rest
+    check('the new side starts off to the side', three.view.getBounds().x > landed.x, JSON.stringify(three.view.getBounds()))
+    equal('at its final size', three.view.getBounds().width, landed.width)
+    check('and the side it joins is in place already', one.view.getBounds().width === one.rest.width && one.view.getBounds().x === one.rest.x)
+    stage.layout()
+    check('the layout running partway doesn\'t make it jump', three.view.getBounds().x > landed.x)
+    stage.win.setBounds({ width: 1100, height: 760 })
+    await settled()
+    const after = three.rest
+    equal('it ends up where it belongs, even if the window changed', three.view.getBounds(), after)
+    check('and it moved with the window', after.x !== landed.x)
+    stage.win.setBounds({ width: 1280, height: 800 })
+    await wait(80)
+
+    // Swapping sides
+    const oneX = one.view.getBounds().x
+    stage.swapSplit()
+    check('swapping slides from where they were', one.view.getBounds().x < one.rest.x && one.view.getBounds().x >= oneX)
+    await settled()
+    equal('and they end up swapped', [one.view.getBounds(), three.view.getBounds()], [one.rest, three.rest])
+    stage.swapSplit()
+    await settled()
+
+    // Leaving split view
+    stage.selectTab(one.id)
+    await wait(30)
+    const leaving = three.view.getBounds()
+    stage.unsplit()
+    check('the page that leaves is still there at first', inWindow(three))
+    equal('with the toolbar on top', topOfWindow(), stage.ui)
+    equal('the one that stays fills the window at once', one.view.getBounds().width, stage.win.getContentSize()[0])
+    equal('the one that leaves hasn\'t changed size', three.view.getBounds().width, leaving.width)
+    check('and it\'s out soon after', await until(() => !inWindow(three), SLIDE_MS + 500))
+    check('still open, in its tab', !three.webContents.isDestroyed() && stage.tabs.has(three.id))
+
+    // Changing your mind partway
+    stage.splitWith(three.id, one.id, 'right')
+    await settled()
+    stage.unsplit()
+    await wait(30)
+    stage.selectTab(three.id)
+    await settled()
+    check('a page picked again as it leaves stays', inWindow(three) && stage.shownTabs.includes(three))
+    equal('where it belongs', three.view.getBounds(), three.rest)
+    stage.closeTab(one.id)
+    await settled()
+
+    // The tab strip
+    const stripTab = stage.createTab({ url: `${base}/a-strip`, active: false })
+    await until(() => ui(stage, `Boolean(document.querySelector('#tabstrip .tab[data-id="${stripTab.id}"]'))`))
+    appearance.update({ autoHide: false })
+    await until(() => ui(stage, `!document.body.classList.contains('chrome-hidden')`))
+    await wait(50)
+    stage.closeTab(stripTab.id)
+    check('a closing tab leaves a picture of itself behind', await until(() => ui(stage, `document.querySelector('body > .tab') !== null`), 500))
+    equal('which takes no clicks', await ui(stage, `document.querySelector('body > .tab') ? getComputedStyle(document.querySelector('body > .tab')).pointerEvents : 'none'`), 'none')
+    equal('and isn\'t mistaken for a tab', await ui(stage, `document.querySelectorAll('#tabstrip .tab').length`), stage.order.length)
+    check('and it goes away', await until(() => ui(stage, `document.querySelector('body > .tab') === null`), 3000)) // timers run slowly in a hidden window
+    appearance.update({ autoHide: true })
+    await until(() => ui(stage, `document.body.classList.contains('chrome-hidden')`))
+
+    // A download
+    const dlDir = path.join(profile, 'animated-downloads')
+    fs.mkdirSync(dlDir, { recursive: true })
+    const realDownloads = app.getPath('downloads')
+    app.setPath('downloads', dlDir)
+    const windowsBefore = BrowserWindow.getAllWindows().length
+    const overlay = () => BrowserWindow.getAllWindows().find((w) => w.getParentWindow() === stage.win)
+    const landedBefore = await ui(stage, `document.getElementById('downloads-btn').classList.contains('bounce')`)
+    equal('no download has arrived yet', landedBefore, false)
+    three.webContents.downloadURL(`${base}/a-file.zip`)
+    check('a download flies across the window', await until(() => overlay(), 2000))
+    equal('in a window that can\'t take focus', overlay()?.isFocusable(), false)
+    equal('or sit in the taskbar', windowsBefore + 1, BrowserWindow.getAllWindows().length)
+    check('the button is there to catch it', await ui(stage, `!document.getElementById('downloads-btn').hidden`))
+    check('and the toolbar comes down for it', stage.revealed)
+    check('it lands on the button', await until(() => ui(stage, `document.getElementById('downloads-btn').classList.contains('bounce')`), 2500))
+    check('and its window goes away', await until(() => !overlay(), 500))
+    await wait(50)
+    equal('nothing is left behind', BrowserWindow.getAllWindows().length, windowsBefore)
+
+    reducedMotion = true
+    await ui(stage, `document.getElementById('downloads-btn').classList.remove('bounce')`)
+    three.webContents.downloadURL(`${base}/b-file.zip`)
+    check('with Windows set to less motion, it just arrives', await until(() => ui(stage, `document.getElementById('downloads-btn').classList.contains('bounce')`), 1500))
+    equal('without flying', overlay(), undefined)
+    const quiet = stage.createTab({ url: `${base}/a-quiet` })
+    await until(() => !quiet.webContents.isLoading())
+    stage.closeTab(quiet.id)
+    check('and a tab closes straight away', await until(() => quiet.webContents.isDestroyed(), 100))
+    app.setPath('downloads', realDownloads)
+    const downloads = require(path.join(REPO, 'src/main/downloads.js'))
+    await until(() => downloads.listDownloads(false).every((d) => d.state !== 'progressing'), 3000)
+    downloads.downloadAction('clear')
+
+    stage.win.close()
+    await until(() => !BrowserShell.all.has(stage))
+    reducedMotion = true
+  }
 
   console.log('\nDragging a tab out')
   shell.selectTab(tab.id)
@@ -1155,6 +1517,74 @@ async function run() {
     check('scripts that remove ads still do', !reloadsYouTubePlayer('setConstant(`ytInitialPlayerResponse\\.playerAds`,`undefined`)'))
   }
 
+  console.log('\nYouTube stopping partway through')
+  {
+    const sound = (() => {
+      const samples = 8000 * 30
+      const header = Buffer.alloc(44)
+      header.write('RIFF', 0); header.writeUInt32LE(36 + samples, 4); header.write('WAVEfmt ', 8); header.writeUInt32LE(16, 16)
+      header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22); header.writeUInt32LE(8000, 24); header.writeUInt32LE(8000, 28)
+      header.writeUInt16LE(1, 32); header.writeUInt16LE(8, 34); header.write('data', 36); header.writeUInt32LE(samples, 40)
+      return Buffer.concat([header, Buffer.alloc(samples, 128)])
+    })()
+    const ses = shell.session
+    ses.protocol.handle('https', (request) => {
+      if (new URL(request.url).pathname === '/sound.wav') return new Response(sound, { headers: { 'content-type': 'audio/wav' } })
+      return new Response('<!doctype html><title>Video</title><video class="html5-main-video" src="/sound.wav" autoplay muted></video><div id="box"></div>', { headers: { 'content-type': 'text/html' } })
+    })
+    const watch = shell.createTab({ url: 'https://www.youtube.com/watch?v=one&list=keep', active: false })
+    const wc = watch.webContents
+    const settled = () => until(() => !wc.isLoading() && wc.getURL(), 5000)
+    const playing = () => until(() => wc.executeJavaScript(`document.querySelector('video').currentTime > 1.5`).catch(() => false), 6000)
+    const failHere = () => wc.executeJavaScript(`(() => { document.querySelector('video')?.pause(); document.getElementById('box').innerHTML = '<div class="ytp-error-content-wrap-reason">Something went wrong</div>'; return 1 })()`)
+    const reloaded = (before) => until(() => !wc.isLoading() && wc.getURL() !== before && /[?&]t=\d+s/.test(wc.getURL()), 5000)
+    await settled()
+    check('a video can play in the test page', await playing())
+    await wc.executeJavaScript(`window.stillHere = true`)
+    const firstUrl = wc.getURL()
+    await failHere()
+    check('an error partway through a video reloads it', await reloaded(firstUrl), wc.getURL())
+    check('at the same point in the video', /[?&]t=[1-9]\d*s/.test(wc.getURL()), wc.getURL())
+    check('keeping the rest of the address', wc.getURL().includes('v=one') && wc.getURL().includes('list=keep'), wc.getURL())
+    check('it plays on', await playing())
+    wc.executeJavaScript(`document.querySelector('video').currentTime = 2; 1`).catch(() => {})
+    await wc.executeJavaScript(`window.stillHere = true`)
+    await failHere()
+    check('a second time is allowed', await until(() => wc.executeJavaScript(`!window.stillHere`).catch(() => false), 5000))
+    await settled()
+    check('and it plays again', await playing())
+    await wc.executeJavaScript(`window.stillHere = true`)
+    await failHere()
+    await wait(2500)
+    equal('but a third stops trying, and YouTube\'s message stays up', await wc.executeJavaScript(`window.stillHere === true && Boolean(document.querySelector('.ytp-error-content-wrap-reason'))`), true)
+
+    const fresh = shell.createTab({ url: 'about:blank', active: false })
+    const load2 = async (url) => {
+      await fresh.webContents.loadURL(url).catch(() => {})
+      await until(() => !fresh.webContents.isLoading(), 5000)
+      await fresh.webContents.executeJavaScript(`window.stillHere = true`)
+    }
+    const stays = async (label, before) => {
+      if (before) await before()
+      await fresh.webContents.executeJavaScript(`(() => { document.getElementById('box').innerHTML = '<div class="ytp-error-content-wrap-reason">This video is private</div>'; document.querySelector('video')?.pause(); return 1 })()`)
+      await wait(2300)
+      equal(label, await fresh.webContents.executeJavaScript(`window.stillHere === true`), true)
+    }
+    await load2('https://www.youtube.com/watch?v=two')
+    await fresh.webContents.executeJavaScript(`document.querySelector('video').removeAttribute('autoplay'); document.querySelector('video').pause(); 1`)
+    await stays('a video that never played keeps its message')
+    await load2('https://www.youtube.com/watch?v=three')
+    await until(() => fresh.webContents.executeJavaScript(`document.querySelector('video').currentTime > 1.5`), 6000)
+    await stays('text you\'re typing isn\'t reloaded away', () => fresh.webContents.executeJavaScript(`(() => { const t = document.createElement('textarea'); t.value = 'half a comment'; document.body.append(t); t.focus(); return 1 })()`))
+    await load2('https://example.test/watch?v=four')
+    await until(() => fresh.webContents.executeJavaScript(`document.querySelector('video').currentTime > 1.5`), 6000)
+    await stays('other sites are left alone')
+    shell.closeTab(fresh.id)
+    shell.closeTab(watch.id)
+    ses.protocol.unhandle('https')
+    await wait(100)
+  }
+
   console.log('\nSleeping tabs')
   {
     const sleepingTabs = require(path.join(REPO, 'src/main/sleeping-tabs.js'))
@@ -1262,6 +1692,50 @@ async function run() {
     menus.runAction(shell, 'toggle-sleep-tabs')
     equal('and back on', sleepingTabs.enabled(), true)
     check('the ⋯ panel has the switch', await ui(shell, `Boolean(document.getElementById('mp-sleep-tabs'))`))
+
+    // Over the memory budget, tabs left alone for 5 minutes sleep too.
+    const realMetrics = app.getAppMetrics
+    const using = (mb) => { app.getAppMetrics = () => [{ memory: { privateBytes: mb * 1024 } }] }
+    const minutes = (n) => n * 60_000
+    const budgetMb = sleepingTabs.MEMORY_BUDGET_BYTES / 1048576
+    const older = await open(`${uniqueHost(20)}/older`)
+    const newer = await open(`${uniqueHost(21)}/newer`)
+    const recent = await open(`${uniqueHost(22)}/recent`)
+    const now = Date.now()
+    older.lastSeen = now - minutes(9)
+    newer.lastSeen = now - minutes(6)
+    recent.lastSeen = now - minutes(2)
+    using(budgetMb - 1)
+    await sleepingTabs.check(now)
+    equal('under budget, nothing sleeps before 30 minutes', [older.sleeping, newer.sleeping, recent.sleeping], [false, false, false])
+    using(budgetMb + 1)
+    await sleepingTabs.check(now)
+    equal('over budget, the longest unused sleeps first', [older.sleeping, newer.sleeping, recent.sleeping], [true, false, false])
+    await sleepingTabs.check(now)
+    equal('then the next, one at a time', [older.sleeping, newer.sleeping, recent.sleeping], [true, true, false])
+    await sleepingTabs.check(now)
+    equal('but not one you used in the last 5 minutes', recent.sleeping, false)
+    newer.lastSeen = now
+    const quiet = await open(`${uniqueHost(23)}/quiet`)
+    quiet.lastSeen = now - minutes(6)
+    using(budgetMb - 1)
+    await sleepingTabs.check(now)
+    equal('back under budget, it stops', quiet.sleeping, false)
+    using(budgetMb + 1)
+    menus.runAction(shell, 'toggle-sleep-tabs')
+    await sleepingTabs.check(now)
+    equal('and the switch turns this off too', quiet.sleeping, false)
+    menus.runAction(shell, 'toggle-sleep-tabs')
+    const protectedTab = await open(`${uniqueHost(24)}/protected`)
+    await protectedTab.webContents.executeJavaScript(`document.body.insertAdjacentHTML('beforeend', '<textarea id=t></textarea>'); document.getElementById('t').value = 'half a message'; 1`, true)
+    protectedTab.lastSeen = now - minutes(60)
+    quiet.lastSeen = now
+    await sleepingTabs.check(now)
+    equal('text you\'ve typed still keeps a tab awake', protectedTab.sleeping, false)
+    app.getAppMetrics = realMetrics
+    check('the real count of memory is a positive number', require(path.join(REPO, 'src/main/sleeping-tabs.js')).MEMORY_BUDGET_BYTES > 0 && realMetrics.call(app).every((m) => m.memory.privateBytes > 0))
+    for (const tab of [older, newer, recent, quiet, protectedTab]) shell.closeTab(tab.id)
+    await wait(100)
   }
 
   console.log('\nEncrypted DNS')
@@ -1536,6 +2010,64 @@ async function run() {
     check('this search does find a normal visit on disk', found.normal.length > 0)
     equal('and finds nothing from the private one', found.private, [])
     shell.closeTab(shell.activeId)
+  }
+
+  console.log('\nSurviving a crash')
+  {
+    const { safeStorage, session } = electron
+    const savedStore = require(path.join(REPO, 'src/main/store.js'))
+    const stateFile = path.join(profile, 'glasswing.json')
+    const realSync = fs.fsyncSync
+    let synced = 0
+    fs.fsyncSync = (handle) => (synced++, realSync(handle))
+    savedStore.set('crashTest', 'kept')
+    savedStore.flush()
+    fs.fsyncSync = realSync
+    check('saved data reaches the disk before it replaces the old file', synced === 1, `synced ${synced} times`)
+    equal('and the file is whole', JSON.parse(fs.readFileSync(stateFile, 'utf8')).crashTest, 'kept')
+    check('with nothing left over', !fs.existsSync(`${stateFile}.tmp`))
+
+    const { keepSessionCookiesSaved } = require(path.join(REPO, 'src/main/persistence.js'))
+    const cookieFile = path.join(profile, 'session-cookies.bin')
+    const savedCookies = () => {
+      try {
+        return JSON.parse(safeStorage.decryptString(fs.readFileSync(cookieFile))).map((c) => c.name)
+      } catch {
+        return []
+      }
+    }
+    const jar = session.fromPartition('crash-test')
+    keepSessionCookiesSaved(jar, 100)
+    await jar.cookies.set({ url: 'https://crash-test.example/', name: 'login', value: 'yes' })
+    check('a new session cookie is saved without quitting', await until(() => savedCookies().includes('login'), 3000), JSON.stringify(savedCookies()))
+    await jar.cookies.set({ url: 'https://crash-test.example/', name: 'lasting', value: 'yes', expirationDate: Date.now() / 1000 + 1000 })
+    await wait(300)
+    check('cookies with a date look after themselves', !savedCookies().includes('lasting'))
+    await jar.cookies.remove('https://crash-test.example/', 'login')
+    check('signing out is saved too, so a crash can\'t undo it', await until(() => !savedCookies().includes('login'), 3000), JSON.stringify(savedCookies()))
+    check('the cookie file isn\'t readable as plain text', !fs.readFileSync(cookieFile).includes('crash-test.example'))
+    await jar.clearData()
+
+    const saving = BrowserShell.keepSessionSaved(50)
+    const savedUrls = () => (savedStore.get('session')?.windows ?? []).flatMap((w) => w.tabs.map((t) => t.url))
+    const opened = shell.createTab({ url: `${base}/open-when-it-crashed`, active: false })
+    await until(() => opened.webContents.getURL().endsWith('/open-when-it-crashed'), 5000)
+    check('an open tab is saved without quitting', await until(() => savedUrls().some((u) => u.endsWith('/open-when-it-crashed')), 2000))
+    shell.closeTab(opened.id)
+    check('and a closed one stops being saved', await until(() => !savedUrls().some((u) => u.endsWith('/open-when-it-crashed')), 2000))
+    const realSet = savedStore.set
+    let sessionWrites = 0
+    savedStore.set = (key, value) => (key === 'session' && sessionWrites++, realSet(key, value))
+    await wait(300)
+    savedStore.set = realSet
+    equal('nothing changed, so nothing is written', sessionWrites, 0)
+    const secret = BrowserShell.create({ private: true, urls: [`${base}/secret-tab`] })
+    await until(() => secret.activeTab()?.webContents.getURL().endsWith('/secret-tab'), 5000)
+    await wait(200)
+    check('private tabs never are', !savedUrls().some((u) => u.endsWith('/secret-tab')))
+    secret.win.close()
+    await until(() => secret.closed, 3000)
+    clearInterval(saving)
   }
 
   console.log('\nDamaged saved data')

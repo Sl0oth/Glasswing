@@ -98,6 +98,11 @@ just says it couldn't reach the server.
   - Also from Ctrl+\, the ⋯ panel, or by right-clicking a tab.
   - Click a side to focus it, and drag the gap between them to resize. Double-click the gap to even it out.
   - The two show as joined in the tab strip, and split views are restored after a restart.
+  - A link clicked on the left opens on the right, so the left can stay put as a list. Links on the right stay on the
+    right. Shift+click opens a new tab, Ctrl+click a tab behind this one, and Alt+click stays on the left. Links that act
+    as buttons or menus, the next page of a list, and jumps within a page aren't moved. If the right side has a video
+    you've started or text you've typed, the link opens on the left instead. There's a switch in the ⋯ panel, and
+    Swap Sides changes which side is which.
 - **Ad and tracker blocking**: built in and on by default, using EasyList, EasyPrivacy and similar lists.
   - The shield button shows how much was blocked on the page, with a switch each for ads and trackers, and one
     to turn blocking off for just this site if it breaks something.
@@ -106,6 +111,10 @@ just says it couldn't reach the server.
   - Sign-in, payment and CAPTCHA services are never blocked (`SAFEGUARDED_HOSTS` in `src/main/blocker.js`).
   - Lists download once in the background, are saved in the profile folder, and refresh weekly.
   - Video ads on some sites, YouTube especially, may still get through.
+  - YouTube sometimes stops sending a video about 45 seconds in, and says "Something went wrong". Refreshing fixes it, so
+    Glasswing does that for you at the same point in the video (`src/preload/youtube-recovery.js`), at most twice for a
+    video in 10 minutes, and not over text you're typing. It didn't happen in plain Electron in testing, and the reason
+    Glasswing is different isn't known yet.
   - When ads are blocked, YouTube makes some signed-in accounts wait about 5 seconds before a video starts. One
     script in the lists tries to dodge this by reloading the player, which can loop forever, so it's left out
     (`reloadsYouTubePlayer` in `src/main/blocker.js`). Turning blocking off for YouTube removes the wait.
@@ -116,14 +125,20 @@ just says it couldn't reach the server.
   - Downloaded files and favorites you add stay. Websites and your network can still see what you do.
   - A tab can't be dragged between a private window and a normal one.
 - **Sleeping tabs**: a tab you haven't used for 30 minutes gives back its memory, looks dimmed, and reloads when
-  selected. Tabs playing sound, partway through a video, using the camera or mic, with text typed in, showing the
+  selected. While Glasswing is over its memory budget that's after 5 minutes, longest unused first, until it's back
+  under. Tabs playing sound, partway through a video, using the camera or mic, with text typed in, showing the
   result of a form, or from sites you've let send notifications stay awake. There's a switch in the ⋯ panel.
+- **Animations** (`src/main/animations.js`): a download flies from the pointer to the downloads button, a closing tab's
+  page drops away, and split view's pages slide in and out. They're short, nothing waits for them, and pages keep taking
+  input throughout: the flying file is in a window clicks pass through. Pages move at their full size, so they don't lay
+  themselves out again every frame. Windows' "Animation effects" setting turns them off.
 - **Encrypted DNS**: site names are looked up through Quad9 or Cloudflare over an encrypted connection, so your
   network can't read them from the lookups. Normal lookups are the fallback. There's a switch on the Protection page.
 - **Picture in Picture**: Alt+P, the ⋯ panel, or right-click a video pops it into a small window that stays on top.
 - **Screenshots**: Ctrl+Shift+S or the ⋯ panel saves what's on screen in the page to Downloads and copies it.
 - **Problems**: errors are written to `glasswing.log` in the profile folder rather than shown as
   dialogs. A page that crashes offers a Reload card, and a background tab reloads when you select it.
+  If Glasswing or the computer crashes, your open tabs and session cookies come back as they were moments before.
 - **Prompts and menus** (save password, site permissions, add extension, right-click, ⋯) are drawn
   by the browser in its own style. None of them are native OS dialogs.
 - **Saved data**:

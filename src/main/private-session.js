@@ -18,6 +18,16 @@ function configure(ses) {
     type: 'frame',
     filePath: path.join(__dirname, '..', 'preload', 'capture.js'),
   })
+  ses.registerPreloadScript({
+    id: 'glasswing-split-links',
+    type: 'frame',
+    filePath: path.join(__dirname, '..', 'preload', 'split-links.js'),
+  })
+  ses.registerPreloadScript({
+    id: 'glasswing-youtube-recovery',
+    type: 'frame',
+    filePath: path.join(__dirname, '..', 'preload', 'youtube-recovery.js'),
+  })
 }
 
 function acquire() {

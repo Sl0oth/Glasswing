@@ -10,7 +10,7 @@ const { BrowserShell } = require('./shell')
 const { applicationMenu } = require('./menus')
 const { setupPasswords } = require('./passwords')
 const { setupGoogleSignIn } = require('./google-signin')
-const { restoreSessionCookies, flushAll } = require('./persistence')
+const { restoreSessionCookies, keepSessionCookiesSaved, flushAll } = require('./persistence')
 const extensions = require('./extensions')
 const blocker = require('./blocker')
 const { setupPrivacy, applySecureDns } = require('./privacy')
@@ -127,6 +127,16 @@ async function start() {
     type: 'frame',
     filePath: path.join(__dirname, '..', 'preload', 'capture.js'),
   })
+  ses.registerPreloadScript({
+    id: 'glasswing-split-links',
+    type: 'frame',
+    filePath: path.join(__dirname, '..', 'preload', 'split-links.js'),
+  })
+  ses.registerPreloadScript({
+    id: 'glasswing-youtube-recovery',
+    type: 'frame',
+    filePath: path.join(__dirname, '..', 'preload', 'youtube-recovery.js'),
+  })
   setupPrivacy()
   applySecureDns(blocker.getSettings().secureDns)
   setupSiteLogin()
@@ -135,6 +145,7 @@ async function start() {
   // The rest of startup can carry on behind it, but no browser window opens until it's done with.
   const setupDone = setup.needed() ? setup.open() : Promise.resolve()
   await restoreSessionCookies(ses).catch((err) => logError('Could not restore session cookies', err))
+  keepSessionCookiesSaved(ses)
   try {
     // Lets the Chrome Web Store's "Add to Chrome" button install into this browser, loads
     // previously installed extensions, and keeps them updated.
@@ -153,6 +164,7 @@ async function start() {
     if (BrowserShell.all.size === 0) BrowserShell.create()
   }
   starting = false
+  BrowserShell.keepSessionSaved()
   updater.start()
   require('./sleeping-tabs').start()
 }

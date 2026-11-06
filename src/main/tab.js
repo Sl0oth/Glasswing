@@ -52,6 +52,18 @@ const WOULD_LOSE_SOMETHING = `(() => {
   return startedMedia || Boolean(document.pictureInPictureElement) || Boolean(window.onbeforeunload) || Boolean(document.activeElement?.isContentEditable) || [...fields].some((f) => f.value !== f.defaultValue)
 })()`
 
+/**
+ * True if replacing a page would throw away something you're in the middle of: a video you've started, or
+ * text you've typed. A search box still holding your search doesn't count, nor do muted videos that play by themselves.
+ */
+const IN_USE = `(() => {
+  const search = '[type=search],[role=combobox],[role=searchbox],[name=q],[name*=search i],form[role=search] input'
+  const fields = document.querySelectorAll('textarea, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]):not([type=file])')
+  const editing = document.activeElement?.isContentEditable && document.activeElement.textContent.trim()
+  const watching = [...document.querySelectorAll('video, audio')].some((m) => m.currentTime > 0 && !m.ended && !m.muted)
+  return watching || Boolean(document.pictureInPictureElement) || Boolean(editing) || [...fields].some((f) => f.value !== f.defaultValue && !f.matches(search))
+})()`
+
 /** Pops the biggest video on the page out into its own small window, or puts it back. */
 const TOGGLE_PICTURE_IN_PICTURE = `(() => {
   if (document.pictureInPictureElement) return document.exitPictureInPicture().then(() => 'closed')
@@ -82,6 +94,7 @@ class Tab {
     this.lastTitle = ''
     this.crashPromptOpen = false
     this.split = null // { left, right, ratio }, shared with the tab on the other side
+    this.reportedLinksAcross = false
     this.capture = noCapture()
     this.sleeping = false
     this.lastSeen = Date.now()
@@ -126,11 +139,10 @@ class Tab {
   }
 
   /** Gives back the page's memory by ending its process. Its address and back/forward list stay. */
-  async sleepIfUnused(now = Date.now()) {
-    const { SLEEP_AFTER_MS } = require('./sleeping-tabs')
+  async sleepIfUnused(now = Date.now(), unusedFor = require('./sleeping-tabs').SLEEP_AFTER_MS) {
     const wc = this.webContents
     if (this.sleeping || this.pendingUrl || wc.isDestroyed() || wc.isCrashed() || wc.isLoading()) return false
-    if (now - this.lastSeen < SLEEP_AFTER_MS || this.shell.visibleTabs().includes(this)) return false
+    if (now - this.lastSeen < unusedFor || this.shell.visibleTabs().includes(this)) return false
     if (!/^https?:/.test(this.url) || wc.isCurrentlyAudible() || wc.isDevToolsOpened()) return false
     if (this.usingCamera || this.usingMicrophone || this.hasNotifications()) return false
     // Ending a process ends everything in it, and a page may be sharing one with others.
@@ -166,6 +178,122 @@ class Tab {
     } catch {
       return false
     }
+  }
+
+  /** Where the page belongs. A page partway through a slide gets there when the slide ends. */
+  place(rect) {
+    this.rest = rect
+    if (!this.stopSlide) this.view.setBounds(rect)
+  }
+
+  /** Starts `dx` away from where it belongs and slides there. */
+  slideIn(dx, dy = 0) {
+    const { enabled, tween, easeOut, SLIDE_MS } = require('./animations')
+    this.stopSlide?.()
+    this.stopSlide = null
+    if (!enabled() || !this.rest || (!dx && !dy)) return
+    const show = (progress) => {
+      if (this.webContents.isDestroyed()) return
+      this.view.setBounds({ ...this.rest, x: this.rest.x + Math.round(dx * (1 - progress)), y: this.rest.y + Math.round(dy * (1 - progress)) })
+    }
+    show(0)
+    this.stopSlide = tween(SLIDE_MS, easeOut, show, () => (this.stopSlide = null))
+  }
+
+  /** Moves `dx` away from where it is, for a page on its way out of the window, then calls `done`. */
+  slideOut(dx, dy, done) {
+    const { enabled, tween, easeIn, SLIDE_MS } = require('./animations')
+    this.stopSlide?.()
+    this.stopSlide = null
+    if (!enabled() || this.webContents.isDestroyed()) return done()
+    const from = this.view.getBounds()
+    const show = (progress) => {
+      if (this.webContents.isDestroyed()) return
+      this.view.setBounds({ ...from, x: from.x + Math.round(dx * progress), y: from.y + Math.round(dy * progress) })
+    }
+    this.stopSlide = tween(SLIDE_MS, easeIn, show, () => {
+      this.stopSlide = null
+      done()
+    })
+  }
+
+  /** Links clicked on the left of a split open on the right. The right side's own links stay on the right. */
+  sendsLinksAcross() {
+    const store = require('./store')
+    return store.get('splitLinks') !== false && this.split?.left === this.id && this.shell.visibleTabs().includes(this)
+  }
+
+  /** Tells the page whether its links should cross over, if that's changed or it's a new page. */
+  reportLinksAcross({ newPage = false } = {}) {
+    const wc = this.webContents
+    if (wc.isDestroyed() || wc.isCrashed() || !wc.getURL()) return // no page to tell: it hears when it has one
+    const on = this.sendsLinksAcross()
+    if (on === this.reportedLinksAcross && !newPage) return
+    this.reportedLinksAcross = on
+    wc.send('split-links:state', on)
+  }
+
+  async inUse() {
+    const wc = this.webContents
+    if (this.pendingUrl || this.sleeping || wc.isDestroyed() || wc.isCrashed()) return false
+    if (wc.isCurrentlyAudible() || this.usingCamera || this.usingMicrophone) return true
+    const answers = Promise.all(wc.mainFrame.framesInSubtree.map((frame) => frame.executeJavaScript(IN_USE).catch(() => false)))
+    return Promise.race([
+      answers.then((each) => each.some(Boolean)),
+      new Promise((resolve) => setTimeout(resolve, 400, true)), // not answering: leave it alone, and don't hold up the click
+    ])
+  }
+
+  /** Whether the other side took the link. If not, it opens on this side, like a link anywhere else. */
+  async openLinkAcross(url) {
+    const partner = this.shell.partnerOf(this)
+    if (!partner || !this.sendsLinksAcross() || !/^https?:/i.test(url) || (await partner.inUse())) return false
+    const wc = partner.webContents
+    if (wc.isDestroyed()) return false
+    // A page can refuse to be left, silently, and then the click would seem to do nothing.
+    return new Promise((resolve) => {
+      const finish = (opened) => {
+        clearTimeout(timer)
+        wc.off('will-prevent-unload', refused)
+        wc.off('did-start-navigation', started)
+        resolve(opened)
+      }
+      const refused = () => finish(false)
+      const started = (details) => details.isMainFrame && finish(true)
+      const timer = setTimeout(finish, 2000, true)
+      wc.on('will-prevent-unload', refused)
+      wc.on('did-start-navigation', started)
+      partner.loadURL(url)
+      this.keepFocusFrom(partner)
+    })
+  }
+
+  /**
+   * A page gets the keyboard as it loads, but you're still on this side. Takes it back only from that page,
+   * so it can't pull you out of the address bar, and only until you use that page yourself.
+   */
+  keepFocusFrom(partner) {
+    const wc = partner.webContents
+    const takeBack = () => {
+      if (!wc.isDestroyed() && !this.webContents.isDestroyed() && wc.isFocused()) this.webContents.focus()
+    }
+    const youUsedIt = (_event, input) => {
+      if (input.type === 'mouseDown' || input.type === 'keyDown' || input.type === 'rawKeyDown') stop()
+    }
+    const finished = () => {
+      takeBack()
+      stop()
+    }
+    const stop = () => {
+      if (wc.isDestroyed()) return
+      wc.off('focus', takeBack)
+      wc.off('input-event', youUsedIt)
+      wc.off('did-stop-loading', finished)
+    }
+    wc.on('focus', takeBack)
+    wc.on('input-event', youUsedIt)
+    wc.on('did-stop-loading', finished)
+    takeBack()
   }
 
   async togglePictureInPicture() {
@@ -331,6 +459,7 @@ class Tab {
       this.captureEnded()
       changed()
     })
+    wc.on('dom-ready', () => this.reportLinksAcross({ newPage: true }))
     wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
       if (!isMainFrame) return
       recordVisit(url)
@@ -383,16 +512,16 @@ class Tab {
       if (isInternal(event.url) && !isInternal(wc.getURL())) event.preventDefault()
     })
 
-    wc.setWindowOpenHandler(({ disposition, url }) => {
+    wc.setWindowOpenHandler(({ disposition, url, features }) => {
       if (isInternal(url) && !isInternal(wc.getURL())) return { action: 'deny' }
       // Popups with window features (OAuth, payment flows) stay real windows so `window.opener` works.
-      if (disposition === 'new-window') {
+      if (disposition === 'new-window' && features) {
         return {
           action: 'allow',
           overrideBrowserWindowOptions: { autoHideMenuBar: true, backgroundColor: '#ffffff' },
         }
       }
-      // Everything else (target=_blank, middle-click, window.open without features) becomes a tab.
+      // Everything else (target=_blank, middle-click, Shift+click, window.open without features) becomes a tab.
       return {
         action: 'allow',
         outlivesOpener: true,

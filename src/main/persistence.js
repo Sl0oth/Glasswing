@@ -4,13 +4,32 @@
 const { app, safeStorage } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
+const { writeFileSafely } = require('./store')
+
+const SAVE_AFTER_CHANGE_MS = 30_000
 
 const file = () => path.join(app.getPath('userData'), 'session-cookies.bin')
 
 async function saveSessionCookies(session) {
   if (!safeStorage.isEncryptionAvailable()) return // never write cookies in plaintext
   const cookies = (await session.cookies.get({})).filter((c) => c.session)
-  fs.writeFileSync(file(), safeStorage.encryptString(JSON.stringify(cookies)))
+  writeFileSafely(file(), safeStorage.encryptString(JSON.stringify(cookies)))
+}
+
+/**
+ * Saves soon after they change, not just when quitting. Otherwise a crash brings back an old copy,
+ * which signs you out of sites, or back in to one you'd signed out of.
+ */
+function keepSessionCookiesSaved(session, delay = SAVE_AFTER_CHANGE_MS) {
+  let timer = null
+  session.cookies.on('changed', (_event, cookie) => {
+    if (!cookie.session || timer) return
+    timer = setTimeout(() => {
+      timer = null
+      saveSessionCookies(session).catch((err) => console.error('Could not save session cookies:', err))
+    }, delay)
+    timer.unref?.()
+  })
 }
 
 async function restoreSessionCookies(session) {
@@ -67,4 +86,4 @@ async function flushAll(session) {
   ])
 }
 
-module.exports = { restoreSessionCookies, flushAll }
+module.exports = { restoreSessionCookies, keepSessionCookiesSaved, flushAll }

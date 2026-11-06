@@ -32,7 +32,7 @@ function broadcast() {
 }
 
 function setupDownloads(session, { isPrivate = false } = {}) {
-  session.on('will-download', (_event, item) => {
+  session.on('will-download', (_event, item, webContents) => {
     const savePath = uniquePath(app.getPath('downloads'), item.getFilename())
     item.setSavePath(savePath)
 
@@ -65,8 +65,17 @@ function setupDownloads(session, { isPrivate = false } = {}) {
     })
 
     const { BrowserShell } = require('./shell')
+    // The file flies across the window it came from. Other windows just show that it arrived.
+    const origin = BrowserShell.fromWebContents(webContents)
     for (const shell of BrowserShell.all) {
-      if (shell.private === isPrivate) shell.sendEvent('download-started', entry.filename)
+      if (shell.private !== isPrivate) continue
+      shell.sendEvent('download-started')
+      if (shell !== origin) shell.sendEvent('download-landed')
+    }
+    if (origin?.private === isPrivate) {
+      require('./animations').flyDownload(origin, entry.filename, () => {
+        if (!origin.closed) origin.sendEvent('download-landed')
+      })
     }
     broadcast()
   })

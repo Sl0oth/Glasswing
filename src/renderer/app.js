@@ -369,6 +369,41 @@ function showDropMarker(x) {
 
 // ── Rendering ────────────────────────────────────────────────────────────
 
+const TAB_MOTION_MS = 170
+
+/** Tabs that aren't being looked at, or a system that asks for less motion, don't need animating. */
+function tabStripOnScreen() {
+  if (dragState || matchMedia('(prefers-reduced-motion: reduce)').matches) return false
+  return !state.toolbarAway || document.body.classList.contains('revealed')
+}
+
+function tabPlaces() {
+  return new Map([...strip.children].map((el) => [el, el.getBoundingClientRect().left]))
+}
+
+/** The other tabs glide from where they were into where they've ended up. */
+function tabsGlide(placesBefore) {
+  for (const [el, left] of placesBefore) {
+    if (!el.isConnected) continue
+    const moved = left - el.getBoundingClientRect().left
+    if (Math.abs(moved) < 1) continue
+    el.animate([{ transform: `translateX(${moved}px)` }, { transform: 'none' }], { duration: TAB_MOTION_MS, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' })
+  }
+}
+
+/** A picture of the closing tab stays where it was for a moment, shrinking away. It takes no clicks. */
+function tabLeaves(el) {
+  const rect = el.getBoundingClientRect()
+  if (!rect.width) return
+  const copy = el.cloneNode(true)
+  copy.querySelectorAll('[id]').forEach((part) => part.removeAttribute('id'))
+  copy.classList.remove('editing')
+  copy.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;margin:0;z-index:5;pointer-events:none`
+  document.body.append(copy)
+  copy.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(0.82) translateY(-5px)' }], { duration: TAB_MOTION_MS, easing: 'ease-in', fill: 'forwards' })
+  setTimeout(() => copy.remove(), TAB_MOTION_MS) // a timer, because animations wait while a window is out of sight
+}
+
 function render() {
   const body = document.body.classList
   body.toggle('private', Boolean(state.private))
@@ -390,17 +425,23 @@ function render() {
 
   // Reconcile tab elements by id.
   const ids = new Set(state.tabs.map((t) => t.id))
+  const tabsChanged = state.tabs.some((t) => !tabEls.has(t.id)) || [...tabEls.keys()].some((id) => !ids.has(id))
+  const animate = tabsChanged && tabEls.size > 0 && tabStripOnScreen()
+  const placesBefore = animate ? tabPlaces() : null
   for (const [id, el] of tabEls) {
     if (!ids.has(id)) {
+      if (animate) tabLeaves(el)
       el.remove()
       tabEls.delete(id)
       loadingBefore.delete(id)
     }
   }
   state.tabs.forEach((t, i) => {
+    const isNew = !tabEls.has(t.id)
     const el = tabEls.get(t.id) ?? createTabEl(t.id)
     updateTabEl(el, t)
     if (!dragState && strip.children[i] !== el) strip.insertBefore(el, strip.children[i] ?? null)
+    if (isNew && animate) el.animate([{ opacity: 0, transform: 'scale(0.82)' }, { opacity: 1, transform: 'none' }], { duration: TAB_MOTION_MS, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.1)' })
   })
   if (!mainPanel.hidden) syncMainPanel()
 
@@ -410,6 +451,7 @@ function render() {
     el.appendChild(address)
     el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }
+  if (placesBefore) tabsGlide(placesBefore)
   updateAddress()
   renderShield()
   reportFloatingRects()
@@ -1286,7 +1328,7 @@ const PANEL_UI_ACTIONS = {
   customize: () => toggleCustomize(true),
 }
 // Actions you'd likely repeat keep the panel open.
-const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-fullscreen'])
+const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-split-links', 'toggle-fullscreen'])
 
 function syncMainPanel() {
   const tab = activeTab()
@@ -1296,6 +1338,7 @@ function syncMainPanel() {
   $('#mp-favbar').classList.toggle('on', Boolean(state.favoritesBarEnabled))
   $('#mp-protection').classList.toggle('on', Boolean(state.protection?.ads || state.protection?.trackers))
   $('#mp-sleep-tabs').classList.toggle('on', Boolean(state.sleepTabs))
+  $('#mp-split-links').classList.toggle('on', Boolean(state.splitLinks))
   $('#mp-split-label').textContent = tab?.split ? 'Separate Split View' : 'Split View'
   $('#mp-favorite-label').textContent = `${favoriteUrls.has(tab?.url) ? 'Remove from' : 'Add to'} Favorites`
   $('[data-action="favorite"]', mainPanel).disabled = !/^https?:/.test(tab?.url ?? '')
@@ -1557,6 +1600,8 @@ api.onEvent((type, payload) => {
       break
     case 'download-started':
       downloadsBtn.hidden = false
+      break
+    case 'download-landed':
       downloadsBtn.classList.remove('bounce')
       void downloadsBtn.offsetWidth
       downloadsBtn.classList.add('bounce')

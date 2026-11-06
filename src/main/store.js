@@ -51,16 +51,30 @@ function set(key, value) {
   saveTimer = setTimeout(flush, 500)
 }
 
+/**
+ * All on disk before it replaces the old file, so if the computer crashes you're left with one or the
+ * other. Without the sync, Windows can record the swap before the contents, leaving a damaged file.
+ */
+function writeFileSafely(target, contents) {
+  const tmp = `${target}.tmp`
+  const handle = fs.openSync(tmp, 'w')
+  try {
+    fs.writeFileSync(handle, contents)
+    fs.fsyncSync(handle)
+  } finally {
+    fs.closeSync(handle)
+  }
+  fs.renameSync(tmp, target)
+}
+
 function flush() {
   clearTimeout(saveTimer)
   if (!data) return
   try {
-    const tmp = `${file}.tmp`
-    fs.writeFileSync(tmp, JSON.stringify(data))
-    fs.renameSync(tmp, file)
+    writeFileSafely(file, JSON.stringify(data))
   } catch (err) {
     console.error('Failed to save state:', err)
   }
 }
 
-module.exports = { get, set, flush, DEFAULT_FAVORITES }
+module.exports = { get, set, flush, writeFileSafely, DEFAULT_FAVORITES }

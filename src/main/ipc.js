@@ -132,6 +132,12 @@ function setupIpc() {
     tab.captureReported(num(audio), num(video))
   })
 
+  const pageTab = (event) => {
+    if (event.senderFrame !== event.sender.mainFrame) return null
+    return BrowserShell.fromWebContents(event.sender)?.tabs.get(event.sender.id) ?? null
+  }
+  ipcMain.handle('split-links:open', (event, url) => pageTab(event)?.openLinkAcross(String(url)) ?? false)
+
   ipcMain.on('backdrop:divider', (event, action, x) => {
     const shell = [...BrowserShell.all].find((s) => s.win.webContents === event.sender)
     if (!shell) return

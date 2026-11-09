@@ -139,6 +139,9 @@ just says it couldn't reach the server.
 - **Email codes**: when a page asks for a code it sent to your email, Glasswing offers to open your email next to it.
   It asks which email you use the first time, and only saves that on your computer. The page's text stays in the page,
   and only English pages are recognized so far. Not in private windows. There's a switch in the ⋯ panel.
+- **Graphics acceleration** (⋯ panel): on by default. Turn it off if your computer crashes while Glasswing is open,
+  for example with a `VIDEO_MEMORY_MANAGEMENT_INTERNAL` blue screen. Pages are then drawn without the graphics card,
+  so videos use more of the processor. It takes a restart, and Glasswing offers one.
 - **New tab page**: a few faint lights drift behind it and tiny specks float up. They only move, so they cost almost no
   CPU, and they stop when Windows' animation effects are off.
 - **Animations** (`src/main/animations.js`): a download flies from the pointer to the downloads button, a closing tab's

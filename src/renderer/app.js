@@ -1432,7 +1432,7 @@ const PANEL_UI_ACTIONS = {
   customize: () => toggleCustomize(true),
 }
 // Actions you'd likely repeat keep the panel open.
-const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-split-links', 'toggle-email-codes', 'toggle-fullscreen'])
+const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-split-links', 'toggle-email-codes', 'toggle-graphics', 'toggle-fullscreen'])
 
 function syncMainPanel() {
   const tab = activeTab()
@@ -1444,6 +1444,7 @@ function syncMainPanel() {
   $('#mp-sleep-tabs').classList.toggle('on', Boolean(state.sleepTabs))
   $('#mp-split-links').classList.toggle('on', Boolean(state.splitLinks))
   $('#mp-email-codes').classList.toggle('on', Boolean(state.emailCodes))
+  $('#mp-graphics').classList.toggle('on', Boolean(state.graphics))
   $('#mp-split-label').textContent = tab?.split ? 'Separate Split View' : 'Split View'
   $('#mp-favorite-label').textContent = `${favoriteUrls.has(tab?.url) ? 'Remove from' : 'Add to'} Favorites`
   $('[data-action="favorite"]', mainPanel).disabled = !/^https?:/.test(tab?.url ?? '')

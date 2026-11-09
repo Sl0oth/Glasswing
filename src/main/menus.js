@@ -396,6 +396,27 @@ function runAction(shell, action) {
       store.set('emailCodes', store.get('emailCodes') === false)
       shell.constructor.all.forEach((each) => each.scheduleState())
     },
+    'toggle-graphics': async () => {
+      const store = require('./store')
+      const on = store.get('graphicsAcceleration') === false
+      store.set('graphicsAcceleration', on)
+      shell.constructor.all.forEach((each) => each.scheduleState())
+      if (on === app.isHardwareAccelerationEnabled()) return // back to how it's running now
+      const { button } = await require('./prompts').ask(shell, {
+        title: on ? 'Turn graphics acceleration back on?' : 'Turn off graphics acceleration?',
+        message: on
+          ? 'Glasswing will use the graphics card again after it restarts.'
+          : 'After Glasswing restarts, pages are drawn without the graphics card. Videos and animations use more of the processor, but a graphics driver that crashes your computer is left alone.',
+        buttons: [
+          { id: 'later', label: 'Later', style: 'secondary' },
+          { id: 'restart', label: 'Restart Glasswing', style: 'primary' },
+        ],
+        cancelId: 'later',
+      })
+      if (button !== 'restart') return
+      app.relaunch()
+      app.quit()
+    },
     'clean-up-tabs': () => require('./tab-cleanup').run(shell).catch((err) => console.error('Could not clean up tabs:', err)),
     find: () => tab && shell.openFind(),
     'zoom-in': () => tab?.zoom(1),

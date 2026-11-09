@@ -2761,6 +2761,47 @@ async function run() {
     await wait(200)
   }
 
+  console.log('\nGraphics acceleration')
+  {
+    const pair = BrowserShell.create({ urls: [`${base}/white`], fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(600)
+    const card = () => ui(pair, `document.querySelector('.prompt:not(.leaving)')?.textContent ?? ''`)
+    const relaunch = electron.app.relaunch
+    let relaunched = 0
+    electron.app.relaunch = () => (relaunched += 1)
+    equal('it\'s on to start with', pair.getState().graphics, true)
+    check('the ⋯ panel has the switch', await ui(pair, `Boolean(document.getElementById('mp-graphics'))`))
+    // These tests run without the graphics card, so turning it off matches how it's running and
+    // turning it back on is the change that takes a restart.
+    equal('(the tests run without the graphics card)', electron.app.isHardwareAccelerationEnabled(), false)
+    menus.runAction(pair, 'toggle-graphics')
+    equal('the switch turns it off', [pair.getState().graphics, store.get('graphicsAcceleration')], [false, false])
+    await wait(400)
+    equal('with nothing to restart for, it doesn\'t ask', await card(), '')
+    menus.runAction(pair, 'toggle-graphics')
+    equal('switching it back on', [pair.getState().graphics, store.get('graphicsAcceleration')], [true, true])
+    check('offers to restart', await until(async () => (await card()).includes('Restart Glasswing'), 2000))
+    const press = (label) => ui(pair, `[...document.querySelectorAll('.prompt:not(.leaving) .btn')].find((b) => b.textContent === ${JSON.stringify(label)}).click()`)
+    await press('Later')
+    check('Later puts it away', await until(async () => (await card()) === '', 2000))
+    equal('and doesn\'t restart anything', relaunched, 0)
+    menus.runAction(pair, 'toggle-graphics')
+    menus.runAction(pair, 'toggle-graphics')
+    check('Restart Glasswing does', await until(async () => (await card()).includes('Restart Glasswing'), 2000))
+    const quit = electron.app.quit
+    let quits = 0
+    electron.app.quit = () => (quits += 1)
+    await press('Restart Glasswing')
+    check('restarting', await until(() => relaunched === 1 && quits === 1, 2000), `${relaunched} ${quits}`)
+    electron.app.quit = quit
+    store.set('graphicsAcceleration', undefined)
+    electron.app.relaunch = relaunch
+    pair.win.destroy()
+    await wait(200)
+  }
+
   electron.screen.getCursorScreenPoint = realCursor
 
   // Let any delayed errors surface.

@@ -1227,6 +1227,7 @@ class BrowserShell {
       sleepTabs: sleepingTabs.enabled(),
       splitLinks: store.get('splitLinks') !== false,
       emailCodes: store.get('emailCodes') !== false,
+      graphics: store.get('graphicsAcceleration') !== false,
       tabs: this.order.map((id) => this.tabs.get(id).state()),
       groups: [...this.groups.values()].map((group) => ({ ...group, count: [...this.tabs.values()].filter((tab) => tab.groupId === group.id).length })),
       activeId: this.activeId,

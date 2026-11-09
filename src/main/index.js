@@ -24,6 +24,10 @@ const fs = require('node:fs')
 // Lets a test run an installed copy against a throwaway profile, even after it restarts itself to update.
 if (process.env.GLASSWING_PROFILE) app.setPath('userData', process.env.GLASSWING_PROFILE)
 
+// Some graphics drivers crash Windows itself. With this off, pages are drawn without the graphics card.
+// It can only be decided before anything starts, so changing it takes a restart.
+if (store.get('graphicsAcceleration') === false) app.disableHardwareAcceleration()
+
 let starting = true // until the first browser window is open
 
 /**

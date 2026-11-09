@@ -70,6 +70,33 @@ const page = (title, color, body = '') =>
   `<button id="top" style="position:fixed;left:0;top:0;width:100%;height:20px" onclick="window.topClicks=(window.topClicks||0)+1">top of page</button>` +
   `<h1 style="margin:60px 20px">${title}</h1>${body}`
 
+// Pages that are waiting for a code from your email, and ones that only look a bit like it. Modeled on common sign-in pages.
+const emailCodePages = {
+  'yes one-time field': '<p>We sent a code to your email.</p><input autocomplete="one-time-code">',
+  'yes masked address': '<form><p>Enter the 6-digit code sent to j***@example.com</p><input name="otp"></form>',
+  'yes row of boxes': '<h2>Check your email</h2><div><input maxlength="1"><input maxlength="1"><input maxlength="1"><input maxlength="1"><input maxlength="1"><input maxlength="1"></div>',
+  'yes emailed': '<div><h2>Verify it\'s you</h2><p>We emailed you a verification code.</p><label>Code <input></label></div>',
+  'yes from your email': '<p>Enter the code from your email to continue</p><input id="verificationCode">',
+  'yes email first': '<p>We sent you an email with a 6-digit code.</p><input name="otp">',
+  'yes address on its own line': '<p>Enter the code we sent to</p><p>sam@example.com</p><input name="code">',
+  'yes email code label': '<label>Email verification code <input id="email_code"></label>',
+  'yes numeric only': '<p>Check your inbox for a code.</p><input inputmode="numeric" maxlength="6">',
+  'yes curly and caps': '<p>WE’VE SENT A LOGIN CODE TO YOUR EMAIL</p><input placeholder="Login code">',
+  'yes appears later': '<p>We sent a code to your email.</p><div id="later"></div><script>setTimeout(() => { document.getElementById("later").innerHTML = "<input name=code>" }, 300)</script>',
+  'yes was only hidden': '<p>We sent a code to your email.</p><input id="hidden-code" name="code" style="display:none"><script>setTimeout(() => { const f = document.getElementById("hidden-code"); f.style.display = ""; f.focus() }, 300)</script>',
+  'no text message': '<p>We texted a code to ***-1234.</p><input autocomplete="one-time-code">',
+  'no authenticator': '<p>Enter the code from your authenticator app.</p><input name="otp">',
+  'no text with email as a fallback': '<p>We texted a code to your phone.</p><input name="code"><a href="#">Email me a code instead</a>',
+  'no promo code': '<p>We sent a code to your email.</p><input name="promoCode" placeholder="Promo code">',
+  'no card security code': '<p>Your receipt will be sent to your email.</p><input autocomplete="cc-csc" name="cvc" placeholder="Security code">',
+  'no zip code': '<p>Check your email for updates.</p><input name="zip" placeholder="Zip code">',
+  'no code before it is sent': '<p>We will send a code to your email.</p><input name="email" type="email"><button>Send code</button>',
+  'no plain login': '<form><input name="email" type="email"><input name="password" type="password"><button>Sign in</button><p>Check your email if you forgot your password</p></form>',
+  'no search box': '<p>We sent a code to your email.</p><input type="search" name="q">',
+  'no already typed': '<p>We sent a code to your email.</p><input name="code" value="123456">',
+  'no code on the page at all': '<article><p>Check your email for the code of conduct.</p></article>',
+}
+
 const server = http.createServer((req, res) => {
   res.setHeader('content-type', 'text/html; charset=utf-8')
   const url = new URL(req.url, 'http://x')
@@ -77,6 +104,12 @@ const server = http.createServer((req, res) => {
   if (url.pathname.endsWith('.js') || url.pathname.endsWith('.gif')) {
     res.setHeader('content-type', 'text/plain')
     return res.end('')
+  }
+  if (url.pathname.startsWith('/email-code/')) {
+    return res.end(page('Sign in', '#fff', emailCodePages[decodeURIComponent(url.pathname.slice(12))] ?? ''))
+  }
+  if (url.pathname === '/login-form') {
+    return res.end(page('Log in', '#fff', '<form id="f" onsubmit="event.preventDefault()"><input id="u" name="username"><input id="p" type="password"><button>Sign in</button></form>'))
   }
   if (url.pathname === '/ads') {
     return res.end(page('Ads', '#fff', '<div class="ad-box" id="box">ad</div><div class="mine" id="mine">mine</div><script src="/banner-ad.js"></script><img src="/tracker-pixel.gif"><script src="/normal.js"></script>'))
@@ -962,7 +995,7 @@ async function run() {
   point = await tabPoint(dragged.id)
   await press(dragged.id, point.x, point.y)
   await pull(1200, 300)
-  await until(() => ui(shell, `document.querySelector('.drag-zone.over')?.dataset.zone === 'right'`), 1000)
+  await until(() => ui(shell, `!document.getElementById('drag-zones').hidden && document.querySelector('.drag-zone.over')?.dataset.zone === 'right'`), 1000)
   await ui(shell, mouse('mouseup', 1200, 300, 0))
   check('dropping on a side makes a split view', await until(() => shell.visibleTabs().length === 2 && dragged.split?.right === dragged.id, 1500))
   equal('with what you were looking at on the other side', dragged.split?.left, tab.id)
@@ -2083,6 +2116,651 @@ async function run() {
   BrowserShell.saveSession()
   check('session saves', store.get('session').windows.length === 1)
 
+  console.log('\nClicking tabs')
+  {
+    const pair = BrowserShell.create({ urls: ['a', 'b', 'c', 'd'].map((n) => `${base}/white?${n}`), fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1600, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(600)
+    const [first, second, third] = pair.order.map((id) => pair.tabs.get(id))
+    pair.mustShowChrome = () => true // the toolbar stays down, because the real pointer isn't anywhere near it
+    await wait(500)
+    const { debugger: mouse } = pair.ui.webContents
+    mouse.attach('1.3')
+    const send = (type, x, y, extra = {}) => mouse.sendCommand('Input.dispatchMouseEvent', { type, x, y, button: 'left', ...extra })
+    const moveTo = (x, y) => mouse.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y })
+    const spotOn = (tab, along = 0.5) => ui(pair, `(() => { const r = document.querySelector('.tab[data-id="${tab.id}"]').getBoundingClientRect(); return { x: Math.round(r.x + r.width * ${along}), y: Math.round(r.y + r.height / 2) } })()`)
+    const dragging = () => ui(pair, `dragState !== null || document.querySelector('.tab.dragging, .tab.pulled-out') !== null || !document.getElementById('drag-zones').hidden`)
+    const order = () => pair.order.join()
+    pair.selectTab(first.id)
+    await wait(150)
+    const before = order()
+
+    let at = await spotOn(second)
+    await moveTo(at.x, at.y)
+    await send('mousePressed', at.x, at.y, { clickCount: 1, buttons: 1 })
+    await send('mouseMoved', at.x + 12, at.y + 3, { buttons: 1 })
+    await send('mouseReleased', at.x + 12, at.y + 3, { clickCount: 1 })
+    check('a quick click with a wobble selects the tab', await until(() => pair.activeId === second.id, 1000), String(pair.activeId))
+    equal('and doesn\'t move it', order(), before)
+    equal('or leave it being dragged', await dragging(), false)
+
+    at = await spotOn(third)
+    await moveTo(at.x, at.y)
+    await send('mousePressed', at.x, at.y, { clickCount: 1, buttons: 1 })
+    await send('mouseMoved', at.x + 2, at.y + 70, { buttons: 1 })
+    await send('mouseReleased', at.x + 2, at.y + 70, { clickCount: 1 })
+    check('a quick click flicked off the tab still selects it', await until(() => pair.activeId === third.id, 1000), String(pair.activeId))
+    equal('with no new window', [BrowserShell.all.has(pair), pair.order.length], [true, 4])
+    equal('and nothing being dragged', await dragging(), false)
+
+    // A click that loses the keyboard to a page halfway through.
+    pair.selectTab(first.id)
+    await wait(150)
+    at = await spotOn(second)
+    await moveTo(at.x, at.y)
+    await send('mousePressed', at.x, at.y, { clickCount: 1, buttons: 1 })
+    await ui(pair, `window.dispatchEvent(new Event('blur'))`)
+    await send('mouseReleased', at.x, at.y, { clickCount: 1 })
+    check('a page taking the keyboard mid-click doesn\'t lose the click', await until(() => pair.activeId === second.id, 1000), String(pair.activeId))
+
+    // A release that never arrived, then another click.
+    pair.selectTab(first.id)
+    await wait(150)
+    at = await spotOn(second)
+    await moveTo(at.x, at.y)
+    await send('mousePressed', at.x, at.y, { clickCount: 1, buttons: 1 })
+    await send('mouseReleased', at.x, at.y, { clickCount: 1 })
+    await until(() => pair.activeId === second.id, 1000)
+    await ui(pair, `document.querySelector('.tab[data-id="${third.id}"]').dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: ${at.x}, clientY: ${at.y}, bubbles: true }))`)
+    await send('mousePressed', 2, 300, { clickCount: 1, buttons: 1 }) // the next press, somewhere else entirely
+    await send('mouseReleased', 2, 300, { clickCount: 1 })
+    await wait(250)
+    at = await spotOn(first)
+    await moveTo(at.x, at.y)
+    await send('mousePressed', at.x, at.y, { clickCount: 1, buttons: 1 })
+    await send('mouseReleased', at.x, at.y, { clickCount: 1 })
+    check('a press that never finished doesn\'t spoil the next click', await until(() => pair.activeId === first.id, 1000), String(pair.activeId))
+    equal('which isn\'t a drag either', await dragging(), false)
+    equal('and nothing moved', order(), before)
+
+    // Holding it is still a drag.
+    at = await spotOn(third)
+    await moveTo(at.x, at.y)
+    await send('mousePressed', at.x, at.y, { clickCount: 1, buttons: 1 })
+    await send('mouseMoved', at.x + 60, at.y, { buttons: 1 })
+    check('holding the button and moving still drags', await until(() => ui(pair, `document.querySelector('.tab.dragging') !== null`), 1000))
+    await send('mouseReleased', at.x + 60, at.y, { clickCount: 1 })
+    await until(async () => !(await dragging()), 1000)
+
+    // The X.
+    const closeOf = (tab, code) => ui(pair, `(() => { const b = document.querySelector('.tab[data-id="${tab.id}"] .tab-close'); const s = getComputedStyle(b); return ${code} })()`)
+    const showing = (tab) => closeOf(tab, `s.display !== 'none' && s.visibility === 'visible'`)
+    pair.selectTab(first.id)
+    await moveTo(0, 300) // the drag above left the pointer resting on the strip
+    await wait(400)
+    equal('with the pointer away, no X is showing', await showing(second), false)
+    at = await spotOn(second, 0.1)
+    const count = pair.order.length
+    await Promise.all([
+      moveTo(at.x, at.y),
+      send('mousePressed', at.x, at.y, { clickCount: 1, buttons: 1 }),
+      send('mouseReleased', at.x, at.y, { clickCount: 1 }),
+    ])
+    check('reaching a tab and clicking where its X would be selects the tab', await until(() => pair.activeId === second.id, 1000))
+    equal('and doesn\'t close it', pair.order.length, count)
+    pair.selectTab(first.id)
+    await wait(150)
+    await moveTo(0, 300)
+    at = await spotOn(third, 0.1)
+    await moveTo(at.x, at.y)
+    check('after a moment it\'s there', await until(() => showing(third), 1000))
+    await send('mousePressed', at.x, at.y, { clickCount: 1, buttons: 1 })
+    await send('mouseReleased', at.x, at.y, { clickCount: 1 })
+    check('and closes the tab', await until(() => !pair.tabs.has(third.id), 1000))
+
+    // So many tabs that they're small.
+    for (let i = 0; i < 40; i += 1) pair.createTab({ url: `${base}/white?many${i}`, active: false })
+    pair.selectTab(first.id)
+    await wait(400)
+    const small = pair.tabs.get(pair.order[6])
+    const width = await ui(pair, `document.querySelector('.tab[data-id="${small.id}"]').getBoundingClientRect().width`)
+    check('with lots of tabs they get small', width < 60, String(width))
+    await ui(pair, `document.querySelector('.tab[data-id="${small.id}"]').scrollIntoView({ inline: 'nearest' })`)
+    await wait(100)
+    at = await spotOn(small)
+    await moveTo(at.x, at.y)
+    await wait(300)
+    equal('a small tab never shows the X', await showing(small), false)
+    check('and keeps its icon', await ui(pair, `getComputedStyle(document.querySelector('.tab[data-id="${small.id}"] .tab-icon')).visibility === 'visible'`))
+    const many = pair.order.length
+    await send('mousePressed', at.x, at.y, { clickCount: 1, buttons: 1 })
+    await send('mouseReleased', at.x, at.y, { clickCount: 1 })
+    check('clicking a small tab selects it', await until(() => pair.activeId === small.id, 1000), String(pair.activeId))
+    equal('every time', pair.order.length, many)
+    mouse.detach()
+    pair.win.destroy()
+    await wait(200)
+  }
+
+  console.log('\nSaving a password')
+  {
+    const store = require(path.join(REPO, 'src/main/store.js'))
+    const passwords = require(path.join(REPO, 'src/main/passwords.js'))
+    const pair = BrowserShell.create({ urls: [`${base}/login-form`], fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(500)
+    const login = pair.activeTab()
+    await until(() => !login.webContents.isLoading())
+    const SECRET = 'correct-horse-9'
+    const signIn = (user, pass) => login.webContents.executeJavaScript(`(() => { document.getElementById('u').value = ${JSON.stringify(user)}; document.getElementById('p').value = ${JSON.stringify(pass)}; document.getElementById('f').requestSubmit() })()`)
+    const field = (n, code) => ui(pair, `(() => { const i = document.querySelectorAll('.prompt:not(.leaving) .prompt-field input')[${n}]; return ${code} })()`)
+    const press = (label) => ui(pair, `[...document.querySelectorAll('.prompt:not(.leaving) .btn')].find((b) => b.textContent === ${JSON.stringify(label)}).click()`)
+    const cardOpen = () => ui(pair, `document.querySelectorAll('.prompt:not(.leaving)').length`)
+    login.webContents.focus()
+    await wait(100)
+    await signIn('sam.tester', SECRET)
+    check('signing in offers to save', await until(async () => (await cardOpen()) === 1, 3000))
+    equal('it shows the username', await field(0, 'i.value'), 'sam.tester')
+    equal('the password is hidden', await field(1, 'i.type'), 'password')
+    equal('with a dot for each character', await field(1, 'i.value.length'), SECRET.length)
+    check('it doesn\'t take the keyboard from the page', login.webContents.isFocused())
+    await shot(pair, 'password-save')
+    await press('Show')
+    equal('Show shows it', await field(1, 'i.type'), 'text')
+    await press('Hide')
+    equal('and Hide hides it again', await field(1, 'i.type'), 'password')
+    await press('Not Now')
+    await until(async () => (await cardOpen()) === 0)
+    equal('Not Now saves nothing', (store.get('passwords') ?? []).length, 0)
+    equal('and leaves nothing of it in the toolbar', await ui(pair, `document.documentElement.outerHTML.includes(${JSON.stringify(SECRET)})`), false)
+
+    await signIn('sam.typo', 'another-one-22')
+    await until(async () => (await cardOpen()) === 1, 3000)
+    await field(0, `(i.value = 'sam.fixed', true)`)
+    await press('Save')
+    await until(async () => (await cardOpen()) === 0)
+    const saved = store.get('passwords') ?? []
+    equal('a username you fix is the one saved', saved.map((e) => e.username), ['sam.fixed'])
+    check('the password is still encrypted', saved[0] && !String(saved[0].password).includes('another-one-22'))
+    equal('the saved list knows how long it is', passwords.listForPage().saved[0].length, 'another-one-22'.length)
+    check('and never gets the password', !JSON.stringify(passwords.listForPage()).includes('another-one-22'))
+    await load(login, 'glasswing://passwords/')
+    const listed = await until(() => login.webContents.executeJavaScript(`document.querySelector('#saved .desc')?.textContent.includes('•'.repeat(${'another-one-22'.length})) ?? false`), 3000)
+    check('the Passwords page shows the username and a dot for each character', listed)
+    equal('with no extra dots', await login.webContents.executeJavaScript(`document.querySelector('#saved .desc').textContent`), `sam.fixed  ·  ${'•'.repeat('another-one-22'.length)}`)
+    store.set('passwords', [])
+    pair.win.destroy()
+    await wait(200)
+  }
+
+  console.log('\nTab groups')
+  {
+    const pair = BrowserShell.create({ urls: ['a', 'b', 'c', 'd'].map((n) => `${base}/white?${n}`), fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1600, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(600)
+    const [a, b, c, d] = pair.order.map((id) => pair.tabs.get(id))
+    const names = () => pair.order.map((id) => ({ [a.id]: 'a', [b.id]: 'b', [c.id]: 'c', [d.id]: 'd' })[id] ?? '?').join('')
+    const strip = () => ui(pair, `[...document.getElementById('tabstrip').children].map((el) => el.classList.contains('tab-group') ? '[' + el.querySelector('.tab-group-name').textContent + ']' : (el.offsetWidth ? 't' : 'h')).join(' ')`)
+    const menuClick = (label) => ui(pair, `[...document.querySelectorAll('.menu-item')].find((r) => r.textContent.includes(${JSON.stringify(label)})).click()`)
+    const settle = () => wait(120)
+    pair.selectTab(a.id)
+    await settle()
+
+    menus.tabContextMenu(pair, b.id, 200, 60)
+    await settle()
+    await menuClick('Add to New Group')
+    check('a new group asks for a name', await until(() => ui(pair, `document.querySelectorAll('.prompt:not(.leaving) .prompt-field input').length === 1`), 2000))
+    await ui(pair, `(() => { document.querySelector('.prompt:not(.leaving) .prompt-field input').value = 'Work'; [...document.querySelectorAll('.prompt:not(.leaving) .btn')].find((x) => x.textContent === 'Create').click() })()`)
+    await until(() => pair.groups.size === 1, 2000)
+    const group = [...pair.groups.values()][0]
+    await settle()
+    equal('its label sits just before its tab', await strip(), 't [Work] t t t')
+    check('the group has a color', Boolean(group.color))
+    check('its tab is marked with it', await ui(pair, `document.querySelector('.tab[data-id="${b.id}"]').dataset.groupColor === ${JSON.stringify(group.color)}`))
+    await shot(pair, 'groups-open')
+
+    pair.setTabGroup(d, group.id)
+    await settle()
+    equal('a group\'s tabs sit together', names(), 'abdc')
+    equal('so the strip shows them that way', await strip(), 't [Work] t t t')
+
+    const chip = (code) => ui(pair, `(() => { const el = document.querySelector('.tab-group'); return ${code} })()`)
+    // A real press and release, through whatever's on top of the label, with the toolbar floating the way it normally does.
+    pair.mustShowChrome = () => true // it stays down, because the real pointer isn't anywhere near it
+    pair.setRevealed(true)
+    await wait(500)
+    const at = await chip(`(() => { const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) } })()`)
+    check('the label counts as part of the floating toolbar', (pair.floatingRects ?? []).some((r) => at.x >= r.x && at.x < r.x + r.width && at.y >= r.y && at.y < r.y + r.height), JSON.stringify(pair.floatingRects))
+    const { debugger: labelInput } = pair.ui.webContents
+    labelInput.attach('1.3')
+    const pressLabel = async () => {
+      // The tabs on either side change when it's clicked, so it may have moved.
+      Object.assign(at, await chip(`(() => { const r = el.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) } })()`))
+      await labelInput.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, button: 'left', clickCount: 1 })
+      await labelInput.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, button: 'left', clickCount: 1 })
+    }
+    await pressLabel()
+    await settle()
+    check('clicking the label hides its tabs', group.collapsed)
+    equal('they\'re gone from the strip', await strip(), 't [Work] h h t')
+    equal('and the label says how many', await chip(`el.querySelector('.tab-group-count').textContent`), '2')
+    await shot(pair, 'groups-hidden')
+    equal('the tab you\'re on is untouched', pair.activeId, a.id)
+    pair.selectRelative(1)
+    equal('moving through tabs passes over hidden ones', pair.activeId, c.id)
+    pair.selectRelative(-1)
+    equal('in both directions', pair.activeId, a.id)
+    await pressLabel()
+    await settle()
+    labelInput.detach()
+    check('clicking again shows them', !group.collapsed)
+    equal('all back', await strip(), 't [Work] t t t')
+
+    pair.selectTab(b.id)
+    await settle()
+    await chip('el.click()')
+    await settle()
+    check('hiding the group you\'re in moves you out of it', pair.activeTab().groupId !== group.id && group.collapsed, String(pair.activeId))
+    check('and the address bar still has a tab to live in', await ui(pair, `Boolean(document.querySelector('.tab.active #address'))`))
+    pair.selectTab(d.id)
+    await settle()
+    check('selecting a hidden tab shows its group', !group.collapsed)
+
+    pair.selectTab(a.id)
+    await settle()
+    const child = pair.createTab({ url: `${base}/white?child`, active: false, openerId: b.id })
+    equal('a link from a grouped tab joins the group', child.groupId, group.id)
+    equal('and stays beside it', pair.order.indexOf(child.id), pair.order.indexOf(b.id) + 1)
+    pair.closeTab(child.id)
+    const copy = pair.duplicateTab(d.id)
+    await settle()
+    equal('so does a duplicate', pair.tabs.get(pair.order[pair.order.indexOf(d.id) + 1]).groupId, group.id)
+    pair.closeTab(pair.order[pair.order.indexOf(d.id) + 1])
+    await settle()
+
+    // Dragging, with the same mouse events a person's hand would make.
+    const drag = async (id, toX) => {
+      await ui(pair, `(() => {
+        const el = document.querySelector('.tab[data-id="${id}"]')
+        const from = el.getBoundingClientRect()
+        window.dragY = from.top + from.height / 2
+        el.dispatchEvent(new MouseEvent('mousedown', { button: 0, clientX: from.left + 8, clientY: window.dragY, bubbles: true }))
+      })()`)
+      await wait(220) // held for long enough to be a drag and not a click
+      await ui(pair, `(() => {
+        const x = ${toX}
+        window.dispatchEvent(new MouseEvent('mousemove', { buttons: 1, clientX: x, clientY: window.dragY }))
+        window.dispatchEvent(new MouseEvent('mouseup', { clientX: x, clientY: window.dragY }))
+      })()`)
+    }
+    const middleOf = (tab) => `(() => { const r = document.querySelector('.tab[data-id="${tab.id}"]').getBoundingClientRect(); return r.left + r.width * 0.25 })()`
+    await drag(c.id, middleOf(d))
+    await settle()
+    equal('dragging a tab into a group adds it', c.groupId, group.id)
+    equal('where it was dropped', names(), 'abcd')
+    await drag(d.id, 'document.getElementById("tabstrip").getBoundingClientRect().right - 2')
+    await settle()
+    equal('dragging one out takes it out', d.groupId, null)
+    equal('to where it was dropped', names(), 'abcd')
+    equal('and the label stays with the others', await strip(), 't [Work] t t t')
+    await drag(d.id, 'document.querySelector(".tab-group").getBoundingClientRect().left - 3')
+    await settle()
+    equal('dragging one before the group leaves it outside', [d.groupId, names()], [null, 'adbc'])
+    moveCursor(640, 500)
+    pair.selectTab(a.id)
+    await settle()
+
+    pair.splitWith(a.id, b.id, 'left')
+    await settle()
+    equal('split with a grouped tab, both sides share the group', a.groupId, group.id)
+    pair.setTabGroup(b, null)
+    equal('and they leave together', [a.groupId, b.groupId], [null, null])
+    pair.unsplit(a.id)
+    await settle()
+    pair.setTabGroup(b, group.id)
+    await settle()
+
+    // What comes back after a restart.
+    pair.selectTab(a.id)
+    await settle()
+    pair.toggleGroup(group.id)
+    await settle()
+    const session = JSON.parse(JSON.stringify(pair.serialize()))
+    equal('the session keeps the group', session.groups.map((g) => [g.name, g.color, g.collapsed]), [['Work', group.color, true]])
+    const back = BrowserShell.create({ tabs: session.tabs, activeIndex: session.active, groups: session.groups, splits: session.splits, fullscreen: false })
+    back.win.setBounds({ x: -6000, y: -6000, width: 1600, height: 800 })
+    showWithoutFocus.call(back.win)
+    await wait(500)
+    const backGroups = [...back.groups.values()]
+    equal('and brings it back', backGroups.map((g) => [g.name, g.collapsed]), [['Work', true]])
+    equal('with the same tabs in it', back.order.map((id) => back.tabs.get(id).groupId != null), session.tabs.map((t) => t.group === 0))
+    check('and how long tabs were looked at', back.order.every((id, i) => back.tabs.get(id).lastSeen === session.tabs[i].lastSeen && back.tabs.get(id).seenMs === session.tabs[i].seenMs))
+    back.win.destroy()
+    await wait(100)
+    const fromBefore = BrowserShell.create({ tabs: [{ url: `${base}/white?old` }, { url: `${base}/white?older` }], fullscreen: false })
+    check('a session from before this can\'t call a tab brief', [...fromBefore.tabs.values()].every((tab) => tab.seenMs >= 60_000))
+    fromBefore.win.destroy()
+    await wait(100)
+
+    pair.toggleGroup(group.id)
+    pair.selectTab(a.id)
+    await settle()
+    const { order: beforeUngroup } = pair
+    const count = beforeUngroup.length
+    pair.ungroup(group.id)
+    await settle()
+    equal('ungrouping keeps every tab', pair.order.length, count)
+    equal('and takes the label away', await ui(pair, `document.querySelectorAll('.tab-group').length`), 0)
+    const second = pair.addGroup({ name: 'Later' })
+    pair.setTabGroup(c, second.id)
+    pair.setTabGroup(d, second.id)
+    await settle()
+    pair.closeGroup(second.id)
+    await settle()
+    equal('Close Group closes its tabs', [pair.tabs.has(c.id), pair.tabs.has(d.id), pair.groups.size], [false, false, 0])
+    const last = pair.addGroup({ name: 'One' })
+    pair.setTabGroup(b, last.id)
+    pair.closeTab(b.id)
+    await settle()
+    equal('a group goes when its last tab does', pair.groups.size, 0)
+
+    pair.win.destroy()
+    await wait(200)
+  }
+
+  console.log('\nClean Up Tabs')
+  {
+    const cleanup = require(path.join(REPO, 'src/main/tab-cleanup.js'))
+    const pair = BrowserShell.create({ urls: [`${base}/white?here`], fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(500)
+    const here = pair.activeTab()
+    const MIN = 60_000
+    const DAY = 24 * 60 * MIN
+    const now = Date.now()
+    const open = async (name, { unused, seen, url = `${base}/white?${name}` }) => {
+      const tab = pair.createTab({ url, active: false, lastSeen: now - unused, seenMs: seen })
+      await until(() => !tab.webContents.isLoading(), 3000)
+      return tab
+    }
+    const old = await open('old', { unused: 4 * DAY, seen: 10 * MIN })
+    const brief = await open('brief', { unused: 20 * MIN, seen: 5000 })
+    const blank = await open('blank', { unused: 1 * MIN, seen: 500, url: 'glasswing://newtab/' })
+    const recentBrief = await open('recent-brief', { unused: 2 * MIN, seen: 5000 })
+    const read = await open('read', { unused: 2 * DAY, seen: 10 * MIN })
+    const neverSeen = await open('never-seen', { unused: 30 * MIN, seen: 0 })
+    const oldGrouped = await open('old-grouped', { unused: 9 * DAY, seen: 10 * MIN })
+    pair.setTabGroup(oldGrouped, pair.addGroup({ name: 'Keep' }).id)
+    const typing = await open('typing', { unused: 9 * DAY, seen: 10 * MIN })
+    await typing.webContents.executeJavaScript(`(() => { const i = document.createElement('input'); i.value = ''; document.body.append(i); i.value = 'half a message' })()`)
+    const stuckInSplit = await open('split-partner', { unused: 9 * DAY, seen: 10 * MIN })
+    pair.splitWith(here.id, stuckInSplit.id, 'left')
+    await wait(150)
+
+    const found = await cleanup.findTabs(pair)
+    const foundTabs = found.map((f) => f.tab)
+    check('finds a tab not used in days', foundTabs.includes(old))
+    check('and one only looked at for a few seconds', foundTabs.includes(brief))
+    check('and an empty new tab', foundTabs.includes(blank))
+    check('oldest first', foundTabs[0] === old)
+    const said = (tab) => found.find((f) => f.tab === tab)?.reason
+    equal('it says why', said(old), 'Last used 4 days ago')
+    equal('for each one', said(brief), 'Open for 5 seconds, 20 minutes ago')
+    equal('even an empty one', said(blank), 'Empty new tab')
+    const keep = (name, tab) => check(`keeps ${name}`, !foundTabs.includes(tab))
+    keep('a brief visit from just now', recentBrief)
+    keep('a tab you read and left for a couple of days', read)
+    keep('a tab you opened but haven\'t looked at yet', neverSeen)
+    keep('a tab you put in a group', oldGrouped)
+    keep('a tab with something typed in it', typing)
+    keep('both sides of the split on screen', stuckInSplit)
+    keep('the tab you\'re on', here)
+
+    const cardText = () => ui(pair, `document.querySelector('.prompt:not(.leaving)')?.textContent ?? ''`)
+    const press = (label) => ui(pair, `[...document.querySelectorAll('.prompt:not(.leaving) .btn')].find((b) => b.textContent === ${JSON.stringify(label)}).click()`)
+    check('the ⋯ panel has it', await ui(pair, `Boolean(document.querySelector('[data-action="clean-up-tabs"]'))`))
+    menus.runAction(pair, 'clean-up-tabs')
+    check('it asks first', await until(async () => (await cardText()).includes('Clean up tabs?'), 2000))
+    check('and lists them', (await cardText()).includes('Empty new tab') && (await cardText()).includes('Last used 4 days ago'))
+    equal('nothing has closed yet', [pair.tabs.has(old.id), pair.tabs.has(brief.id), pair.tabs.has(blank.id)], [true, true, true])
+    await shot(pair, 'clean-up')
+    await press('Cancel')
+    await until(async () => (await cardText()) === '')
+    await wait(50)
+    check('Cancel closes nothing', pair.tabs.has(old.id) && pair.tabs.has(brief.id) && pair.tabs.has(blank.id))
+
+    const before = pair.closedTabs.length
+    const running = cleanup.run(pair)
+    await until(async () => (await cardText()).includes('Clean up tabs?'), 2000)
+    await ui(pair, `document.querySelectorAll('.prompt:not(.leaving) .prompt-checklist-row input')[1].click()`) // spares the second
+    const spared = foundTabs[1]
+    await press('Close Tabs')
+    equal('closes what was left ticked', await running, foundTabs.length - 1)
+    check('and spares what you unticked', pair.tabs.has(spared.id))
+    check('the others are gone', foundTabs.filter((t) => t !== spared).every((t) => !pair.tabs.has(t.id)))
+    check('nothing else was touched', [here, recentBrief, read, neverSeen, oldGrouped, typing, stuckInSplit].every((t) => pair.tabs.has(t.id)))
+    equal('tabs can come back afterward', pair.closedTabs.length - before, foundTabs.filter((t) => t !== spared && t !== blank).length)
+    check('the page you were on stayed', pair.activeId === here.id)
+
+    pair.closeTab(spared.id)
+    await wait(100)
+    equal('with nothing left to clean up, it says so', await cleanup.run(pair), 0)
+    equal('and asks nothing', await cardText(), '')
+
+    // The count itself.
+    pair.unsplit(here.id)
+    await wait(100)
+    const counted = pair.createTab({ url: `${base}/white?counted`, active: false })
+    equal('a tab starts with no time on screen', counted.totalSeenMs(), 0)
+    pair.selectTab(counted.id)
+    await wait(300)
+    pair.selectTab(here.id)
+    const time = counted.seenMs
+    check('time on screen is counted', time >= 250 && time < 3000, String(time))
+    check('and when you left it', Date.now() - counted.lastSeen < 1000)
+    await wait(100)
+    equal('it stops counting once you\'ve left', counted.totalSeenMs(), time)
+    pair.win.destroy()
+    await wait(200)
+  }
+
+  console.log('\nEmail codes')
+  {
+    const store = require(path.join(REPO, 'src/main/store.js'))
+    const emailCode = require(path.join(REPO, 'src/main/email-code.js'))
+    const pair = BrowserShell.create({ urls: [`${base}/white`], fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(400)
+    const code = pair.activeTab()
+    // On its own host, because your email counts as being on the same site as anything at its address.
+    const pageAt = (name) => `${base.replace('127.0.0.1', 'localhost')}/email-code/${encodeURIComponent(name)}`
+    const cardText = () => ui(pair, `[...document.querySelectorAll('.prompt:not(.leaving)')].map((p) => p.textContent).join('|')`)
+    const press = (label) => ui(pair, `[...document.querySelector('.prompt:not(.leaving)').querySelectorAll('.btn')].find((b) => b.textContent === ${JSON.stringify(label)}).click()`)
+    const others = () => pair.order.map((id) => pair.tabs.get(id)).filter((t) => t !== code)
+
+    // Every page gets its answer here, without opening anything. The card itself comes next.
+    const seen = []
+    const realOffer = emailCode.offer
+    emailCode.offer = async () => seen.push(code.webContents.getURL())
+    for (const name of Object.keys(emailCodePages)) {
+      seen.length = 0
+      await load(code, pageAt(name))
+      const wanted = name.startsWith('yes')
+      if (wanted) check(`noticed: ${name.slice(4)}`, await until(() => seen.length === 1, 3000), `seen ${seen.length}`)
+      else {
+        await wait(1100) // longer than it waits before looking
+        equal(`left alone: ${name.slice(3)}`, seen.length, 0)
+      }
+    }
+    // A single-page site moving to a page that wants a code.
+    seen.length = 0
+    await load(code, pageAt('no plain login'))
+    await code.webContents.executeJavaScript(`document.querySelector('form').innerHTML = '<p>We sent a code to your email.</p><input name="otp">'`)
+    check('a page that changes by itself gets noticed', await until(() => seen.length === 1, 3000))
+    emailCode.offer = realOffer
+
+    equal('nothing is saved until you choose', store.get('mailService'), undefined)
+    await load(code, pageAt('yes one-time field'))
+    check('the first time, it asks which email', await until(async () => (await cardText()).includes('Pick your email'), 3000), await cardText())
+    check('and says the choice stays here', (await cardText()).includes('only saved on this computer'))
+    check('the buttons all fit in the card', await ui(pair, `(() => { const card = document.querySelector('.prompt:not(.leaving)').getBoundingClientRect(); return [...document.querySelectorAll('.prompt:not(.leaving) .btn')].every((b) => { const r = b.getBoundingClientRect(); return r.left >= card.left && r.right <= card.right && r.bottom <= card.bottom }) })()`))
+    await shot(pair, 'email-code-first')
+    await press('Not now')
+    await until(async () => (await cardText()) === '')
+    equal('Not now opens nothing', others().length, 0)
+    equal('and saves nothing', store.get('mailService'), undefined)
+    await load(code, pageAt('yes masked address'))
+    await wait(1100)
+    equal('and that site isn\'t asked again for a while', await cardText(), '')
+
+    emailCode.forgetAsked()
+    await load(code, pageAt('yes one-time field'))
+    await until(async () => (await cardText()).includes('Pick your email'), 3000)
+    const offered = await cardText()
+    check('every email is offered', ['Gmail', 'Outlook', 'Yahoo', 'iCloud', 'Proton'].every((n) => offered.includes(n)), offered)
+    await press('Other…')
+    check('Other asks for an address', await until(async () => (await cardText()).includes('Where’s your email'), 2000), await cardText())
+    const type = (text) => ui(pair, `document.querySelector('.prompt:not(.leaving) .prompt-field input').value = ${JSON.stringify(text)}`)
+    await type('not an address')
+    await press('Open')
+    check('a bad address is asked for again', await until(async () => (await cardText()).includes('doesn’t look like'), 2000), await cardText())
+    await type('javascript:alert(1)')
+    await press('Open')
+    await wait(200)
+    equal('and a script isn\'t an address', others().length, 0)
+    await type(`${base}/white`)
+    await press('Open')
+    // 127.0.0.1 counts as an address with dots in it, which is all this needs.
+    check('it opens next to the page', await until(() => others().length === 1 && code.split?.right === others()[0]?.id, 3000), JSON.stringify(code.split))
+    const mail = others()[0]
+    check('with the page on the left', code.split?.left === code.id)
+    check('your email loads', await until(() => mail.webContents.getURL().endsWith('/white'), 3000), mail.webContents.getURL())
+    equal('the choice is saved', store.get('mailService')?.url, `${base}/white`)
+    check('the page stays the one in use', await until(() => pair.activeId === code.id, 2000), String(pair.activeId))
+    check('and keeps the keyboard', await until(() => code.webContents.isFocused(), 2000))
+    await shot(pair, 'email-code-open')
+
+    emailCode.forgetAsked()
+    await load(code, pageAt('yes masked address'))
+    await wait(1100)
+    equal('with your email already beside it, it says nothing', await cardText(), '')
+
+    pair.unsplit(code.id)
+    await wait(100)
+    pair.selectTab(code.id)
+    await load(code, pageAt('yes one-time field'))
+    const name = store.get('mailService').name
+    check('after that, it just offers your email', await until(async () => (await cardText()).includes(`Open ${name}`), 3000), await cardText())
+    await press(`Open ${name}`)
+    check('and uses the tab it\'s already in', await until(() => code.split?.right === mail.id, 2000) && others().length === 1, JSON.stringify(others().map((t) => t.url)))
+    equal('it didn\'t reload that tab', mail.webContents.getURL(), `${base}/white`)
+
+    // A third page: the split it was in has to give way, without closing anything.
+    pair.unsplit(code.id)
+    await wait(100)
+    const third = pair.createTab({ url: `${base.replace('127.0.0.1', 'localhost')}/right-side`, active: false })
+    pair.selectTab(code.id)
+    pair.splitWith(code.id, third.id, 'left')
+    await wait(100)
+    emailCode.forgetAsked()
+    await load(code, pageAt('yes masked address'))
+    await until(async () => (await cardText()).includes(`Open ${name}`), 3000)
+    await press(`Open ${name}`)
+    check('a page already in a split swaps its partner for your email', await until(() => code.split?.right === mail.id, 2000))
+    check('and the other page stays open', pair.tabs.has(third.id) && !third.split)
+    pair.closeTab(third.id)
+    pair.unsplit(code.id)
+    await wait(100)
+
+    pair.selectTab(code.id)
+    emailCode.forgetAsked()
+    await load(code, pageAt('yes one-time field'))
+    await until(async () => (await cardText()).includes(`Open ${name}`), 3000)
+    await load(code, `${base}/white`)
+    check('the card goes away if you leave the page', await until(async () => (await cardText()) === '', 2000))
+
+    menus.runAction(pair, 'toggle-email-codes')
+    equal('the switch turns it off', pair.getState().emailCodes, false)
+    emailCode.forgetAsked()
+    await load(code, pageAt('yes one-time field'))
+    await wait(1100)
+    equal('and then nothing asks', await cardText(), '')
+    menus.runAction(pair, 'toggle-email-codes')
+    equal('and back on', pair.getState().emailCodes, true)
+    check('the ⋯ panel has the switch', await ui(pair, `Boolean(document.getElementById('mp-email-codes'))`))
+
+    check('what\'s saved is only the name and address of your email', Object.keys(store.get('mailService')).sort().join() === 'name,url')
+
+    const priv = BrowserShell.create({ private: true, urls: [pageAt('yes one-time field')] })
+    priv.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(priv.win)
+    await wait(2000)
+    equal('private windows don\'t ask', await ui(priv, `document.querySelectorAll('.prompt:not(.leaving)').length`), 0)
+    priv.win.destroy()
+    pair.win.destroy()
+    store.set('mailService', undefined)
+    await wait(200)
+  }
+
+  console.log('\nThe + button')
+  {
+    const pair = BrowserShell.create({ urls: [`${base}/white`], fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(600)
+    pair.activeTab().webContents.focus()
+    await wait(100)
+    check('a page has the keyboard to start with', pair.activeTab().webContents.isFocused())
+    await ui(pair, `document.getElementById('new-tab').click()`)
+    await until(() => pair.order.length === 2)
+    const fresh = pair.activeTab()
+    await until(() => !fresh.webContents.isLoading(), 3000)
+    await wait(150)
+    check('+ puts the keyboard in the address bar', pair.ui.webContents.isFocused())
+    check('even after the new page has loaded', !fresh.webContents.isFocused())
+    check('and it\'s ready to type in', await ui(pair, `document.activeElement.id === 'address-input'`))
+    fresh.webContents.focus()
+    await wait(100)
+    check('after that, a page can have it back', fresh.webContents.isFocused())
+
+    // Going back to tabs that are already open leaves the address bar alone, even an empty one.
+    const [page] = pair.order.map((id) => pair.tabs.get(id))
+    pair.mustShowChrome = () => true
+    pair.setRevealed(true)
+    await wait(400)
+    const { debugger: mouse } = pair.ui.webContents
+    mouse.attach('1.3')
+    const clickTab = async (tab, times = 1) => {
+      const at = await ui(pair, `(() => { const r = document.querySelector('.tab[data-id="${tab.id}"]').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } })()`)
+      for (let n = 1; n <= times; n++) {
+        await mouse.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', x: at.x, y: at.y, button: 'left', clickCount: n, buttons: 1 })
+        await mouse.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', x: at.x, y: at.y, button: 'left', clickCount: n })
+        await wait(n < times ? 80 : 400)
+      }
+    }
+    const typing = () => ui(pair, `document.activeElement.id === 'address-input' && document.querySelector('#address').classList.contains('editing')`)
+    await clickTab(page)
+    await wait(600) // past a double-click
+    equal('clicking an open tab selects it', pair.activeId, page.id)
+    await clickTab(fresh)
+    await wait(600)
+    equal('clicking back to the empty tab selects it', pair.activeId, fresh.id)
+    equal('but doesn\'t start typing in the address bar', await typing(), false)
+    await clickTab(fresh)
+    equal('clicking the tab you\'re on doesn\'t either', await typing(), false)
+    await wait(600)
+    await clickTab(fresh, 2)
+    check('double-clicking it does', await typing())
+    mouse.detach()
+    pair.win.destroy()
+    await wait(200)
+  }
+
   electron.screen.getCursorScreenPoint = realCursor
 
   // Let any delayed errors surface.
@@ -2117,6 +2795,6 @@ function finish(code) {
 setTimeout(() => {
   console.error('Smoke test timed out')
   finish(1)
-}, 180_000)
+}, 300_000)
 
 require(path.join(REPO, 'src/main/index.js'))

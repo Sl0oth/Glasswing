@@ -42,7 +42,10 @@ let tabDragOut = false // a tab has been pulled out of the strip
 let menuOpen = false
 const prompts = new Map() // id → { data, el }
 
-const TAB_PULL_MARGIN = 14 // how far past the tab strip a tab goes before it's been pulled out
+const TAB_PULL_MARGIN = 34 // how far past the tab strip a tab goes before it's been pulled out
+const TAB_CLICK_MS = 180 // a press this short is a click, even if the hand moved during it
+const TAB_DOUBLE_CLICK_MS = 450
+let lastTabClick = { id: null, at: 0 }
 const strip = $('#tabstrip')
 const dragZones = $('#drag-zones')
 const dropMarker = $('#drop-marker')
@@ -209,6 +212,11 @@ function updateTabEl(el, tab) {
   el.classList.toggle('split-right', tab.split === 'right')
   el.classList.toggle('split-visible', tab.splitPartner === state.activeId)
   el.title = isActive ? '' : tab.title
+  const group = groupOf(tab)
+  el.classList.toggle('grouped', Boolean(group))
+  el.classList.toggle('group-hidden', Boolean(group?.collapsed))
+  if (group) el.dataset.groupColor = group.color
+  else delete el.dataset.groupColor
 
   const title = $('.tab-title', el)
   const text = isNewTabUrl(tab.url) && !tab.loading ? 'New Tab' : tab.title
@@ -232,6 +240,48 @@ function updateTabEl(el, tab) {
   loadingBefore.set(tab.id, tab.loading)
 }
 
+// ── Tab groups ───────────────────────────────────────────────────────────
+
+const groupEls = new Map()
+
+function groupOf(tab) {
+  return tab.group == null ? null : state.groups?.find((g) => g.id === tab.group) ?? null
+}
+
+function createGroupEl(id) {
+  const el = document.createElement('button')
+  el.className = 'tab-group'
+  el.tabIndex = -1
+  el.innerHTML = `<svg class="tab-group-arrow" viewBox="0 0 16 16"><path d="M6 4l4 4-4 4" /></svg><span class="tab-group-name"></span><span class="tab-group-count"></span>`
+  el.addEventListener('click', () => api.send('group-toggle', id))
+  el.addEventListener('mousedown', (e) => e.preventDefault()) // the address bar keeps the keyboard
+  el.addEventListener('contextmenu', (e) => {
+    e.preventDefault()
+    api.send('group-menu', id, e.clientX, e.clientY)
+  })
+  groupEls.set(id, el)
+  return el
+}
+
+function updateGroupEl(el, group) {
+  el.dataset.groupColor = group.color
+  el.classList.toggle('collapsed', group.collapsed)
+  $('.tab-group-name', el).textContent = group.name
+  $('.tab-group-count', el).textContent = group.collapsed ? group.count : ''
+  el.title = `${group.collapsed ? 'Show' : 'Hide'} ${group.count === 1 ? '1 tab' : `${group.count} tabs`}`
+}
+
+/** The group whose stretch of the strip `x` is over, unless it's hidden away. `el`, the tab being moved, doesn't count. */
+function groupAtPoint(x, el) {
+  for (const [id, chip] of groupEls) {
+    if (chip.classList.contains('collapsed')) continue
+    const tabs = [...tabEls.entries()].filter(([tabId, tabEl]) => tabEl !== el && state.tabs.find((t) => t.id === tabId)?.group === id).map(([, tabEl]) => tabEl)
+    const right = Math.max(chip.getBoundingClientRect().right, ...tabs.map((tabEl) => tabEl.getBoundingClientRect().right))
+    if (x >= chip.getBoundingClientRect().left && x <= right) return id
+  }
+  return null
+}
+
 function onTabMouseDown(e, id, el) {
   if (e.button === 1) {
     e.preventDefault() // no autoscroll
@@ -242,21 +292,27 @@ function onTabMouseDown(e, id, el) {
   const wasActive = id === state.activeId
   if (wasActive && editing) return // let the input handle caret/selection
   e.preventDefault()
+  dragState?.cancel?.() // an earlier press whose release never arrived mustn't turn this click into a drag
 
   // Selecting waits for the mouse button to come up. A tab dragged out for split view has to leave
   // the page you're looking at on screen, to split with.
   const startX = e.clientX
   const startY = e.clientY
+  const pressedAt = performance.now()
+  let waitForHold = null
   dragState = { id, el, moved: false, out: false }
 
-  const others = () => [...strip.children].filter((c) => c !== el)
+  const others = () => [...strip.querySelectorAll(':scope > .tab')].filter((c) => c !== el)
+  // Counts tabs, including those hidden in a group. A group's label marks where that group starts.
   const targetIndex = (x) => {
-    const list = others()
-    const i = list.findIndex((c) => {
+    let index = 0
+    for (const c of strip.children) {
+      if (c === el) continue
       const r = c.getBoundingClientRect()
-      return x < r.left + r.width / 2
-    })
-    return i === -1 ? list.length : i
+      if (r.width && x < r.left + r.width / 2) return index
+      if (c.classList.contains('tab')) index += 1
+    }
+    return index
   }
 
   const isOutOfStrip = (ev) =>
@@ -282,6 +338,15 @@ function onTabMouseDown(e, id, el) {
     const dx = ev.clientX - startX
     const dy = ev.clientY - startY
     if (!dragState.moved && Math.abs(dx) < 6 && Math.abs(dy) < 6) return
+    if (!dragState.moved) {
+      // Hands move during a quick click. It's only a drag if the button is still down a moment later.
+      const heldFor = performance.now() - pressedAt
+      if (heldFor < TAB_CLICK_MS) {
+        clearTimeout(waitForHold)
+        waitForHold = setTimeout(() => dragState?.id === id && onMove(ev), TAB_CLICK_MS - heldFor)
+        return
+      }
+    }
     dragState.moved = true
     if (isOutOfStrip(ev)) return setOut(true)
     setOut(false)
@@ -291,9 +356,10 @@ function onTabMouseDown(e, id, el) {
   }
 
   const stopListening = () => {
+    clearTimeout(waitForHold)
     window.removeEventListener('mousemove', onMove)
     window.removeEventListener('mouseup', onUp)
-    window.removeEventListener('blur', cancel)
+    window.removeEventListener('blur', onBlur)
   }
 
   const onUp = (ev) => {
@@ -310,11 +376,16 @@ function onTabMouseDown(e, id, el) {
     if (!tabEls.has(id)) return // closed while being dragged
     if (moved && state.tabs.length > 1) {
       const index = targetIndex(ev.clientX)
+      const group = groupAtPoint(ev.clientX, el)
       strip.insertBefore(el, others()[index] ?? null)
-      api.send('move-tab', id, index)
+      api.send('move-tab', id, index, group)
     }
+    // Clicking the tab you're on leaves the keyboard where it was. Double-click it to type an address.
+    const now = performance.now()
+    const second = !moved && lastTabClick.id === id && now - lastTabClick.at < TAB_DOUBLE_CLICK_MS
+    lastTabClick = second || moved ? { id: null, at: 0 } : { id, at: now }
     if (!wasActive) api.send('select-tab', id)
-    else if (!moved) beginEdit()
+    else if (second) beginEdit()
   }
 
   const cancel = () => {
@@ -331,9 +402,14 @@ function onTabMouseDown(e, id, el) {
   }
   dragState.cancel = cancel
 
+  // A page can take the keyboard in the middle of a click, and that's no reason to lose the click.
+  const onBlur = () => {
+    if (dragState?.moved) cancel()
+  }
+
   window.addEventListener('mousemove', onMove)
   window.addEventListener('mouseup', onUp)
-  window.addEventListener('blur', cancel)
+  window.addEventListener('blur', onBlur)
 }
 
 function finishPull(el) {
@@ -355,14 +431,14 @@ function showDropMarker(x) {
   body.toggle('drop-target', x != null)
   dropMarker.hidden = x == null
   if (x == null) return
-  const tabs = [...strip.children]
+  const tabs = [...strip.querySelectorAll(':scope > .tab')]
   let index = tabs.findIndex((c) => {
     const r = c.getBoundingClientRect()
     return x < r.left + r.width / 2
   })
   if (index === -1) index = tabs.length
   const before = tabs[index]?.getBoundingClientRect()
-  const after = tabs[index - 1]?.getBoundingClientRect()
+  const after = tabs.slice(0, index).findLast((c) => c.offsetWidth)?.getBoundingClientRect()
   dropMarker.style.left = `${before ? before.left - 4 : (after?.right ?? strip.getBoundingClientRect().left) + 2}px`
   api.send('tab-drop-index', index)
 }
@@ -370,6 +446,7 @@ function showDropMarker(x) {
 // ── Rendering ────────────────────────────────────────────────────────────
 
 const TAB_MOTION_MS = 170
+let groupsBefore = '[]'
 
 /** Tabs that aren't being looked at, or a system that asks for less motion, don't need animating. */
 function tabStripOnScreen() {
@@ -426,7 +503,10 @@ function render() {
   // Reconcile tab elements by id.
   const ids = new Set(state.tabs.map((t) => t.id))
   const tabsChanged = state.tabs.some((t) => !tabEls.has(t.id)) || [...tabEls.keys()].some((id) => !ids.has(id))
-  const animate = tabsChanged && tabEls.size > 0 && tabStripOnScreen()
+  const groupsNow = JSON.stringify((state.groups ?? []).map((g) => [g.id, g.collapsed]))
+  const groupsChanged = groupsNow !== groupsBefore
+  groupsBefore = groupsNow
+  const animate = (tabsChanged || groupsChanged) && tabEls.size > 0 && tabStripOnScreen()
   const placesBefore = animate ? tabPlaces() : null
   for (const [id, el] of tabEls) {
     if (!ids.has(id)) {
@@ -436,13 +516,37 @@ function render() {
       loadingBefore.delete(id)
     }
   }
-  state.tabs.forEach((t, i) => {
+  const groupIds = new Set((state.groups ?? []).map((g) => g.id))
+  for (const [id, el] of groupEls) {
+    if (groupIds.has(id)) continue
+    el.remove()
+    groupEls.delete(id)
+  }
+  // Each group's label comes just before its first tab.
+  const wanted = []
+  const appearing = []
+  let lastGroup = null
+  for (const t of state.tabs) {
+    const group = groupOf(t)
+    if (group && group.id !== lastGroup) {
+      const isNew = !groupEls.has(group.id)
+      const chip = groupEls.get(group.id) ?? createGroupEl(group.id)
+      updateGroupEl(chip, group)
+      wanted.push(chip)
+      if (isNew) appearing.push(chip)
+    }
+    lastGroup = group?.id ?? null
     const isNew = !tabEls.has(t.id)
     const el = tabEls.get(t.id) ?? createTabEl(t.id)
+    const wasHidden = el.classList.contains('group-hidden')
     updateTabEl(el, t)
-    if (!dragState && strip.children[i] !== el) strip.insertBefore(el, strip.children[i] ?? null)
-    if (isNew && animate) el.animate([{ opacity: 0, transform: 'scale(0.82)' }, { opacity: 1, transform: 'none' }], { duration: TAB_MOTION_MS, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.1)' })
+    wanted.push(el)
+    if (isNew || (wasHidden && !el.classList.contains('group-hidden'))) appearing.push(el)
+  }
+  if (!dragState) wanted.forEach((el, i) => {
+    if (strip.children[i] !== el) strip.insertBefore(el, strip.children[i] ?? null)
   })
+  if (animate) for (const el of appearing) el.animate([{ opacity: 0, transform: 'scale(0.82)' }, { opacity: 1, transform: 'none' }], { duration: TAB_MOTION_MS, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.1)' })
   if (!mainPanel.hidden) syncMainPanel()
 
   const el = activeEl()
@@ -874,7 +978,7 @@ function reportFloatingRects() {
   clearTimeout(rectsTimer)
   rectsTimer = setTimeout(() => {
     if (!state.chromeHidden || !state.revealed) return // only meaningful once they've slid in
-    const rects = [...document.querySelectorAll('#left-pill, #right-pill, #fav-pill, #find-pill, .tab')]
+    const rects = [...document.querySelectorAll('#left-pill, #right-pill, #fav-pill, #find-pill, .tab, .tab-group')]
       .map((el) => el.getBoundingClientRect())
       .filter((r) => r.width > 0 && r.height > 0)
       .map((r) => ({ x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) }))
@@ -1328,7 +1432,7 @@ const PANEL_UI_ACTIONS = {
   customize: () => toggleCustomize(true),
 }
 // Actions you'd likely repeat keep the panel open.
-const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-split-links', 'toggle-fullscreen'])
+const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-split-links', 'toggle-email-codes', 'toggle-fullscreen'])
 
 function syncMainPanel() {
   const tab = activeTab()
@@ -1339,6 +1443,7 @@ function syncMainPanel() {
   $('#mp-protection').classList.toggle('on', Boolean(state.protection?.ads || state.protection?.trackers))
   $('#mp-sleep-tabs').classList.toggle('on', Boolean(state.sleepTabs))
   $('#mp-split-links').classList.toggle('on', Boolean(state.splitLinks))
+  $('#mp-email-codes').classList.toggle('on', Boolean(state.emailCodes))
   $('#mp-split-label').textContent = tab?.split ? 'Separate Split View' : 'Split View'
   $('#mp-favorite-label').textContent = `${favoriteUrls.has(tab?.url) ? 'Remove from' : 'Add to'} Favorites`
   $('[data-action="favorite"]', mainPanel).disabled = !/^https?:/.test(tab?.url ?? '')
@@ -1526,12 +1631,46 @@ function showPrompt(data) {
   const inputs = new Map()
   for (const field of data.fields ?? []) {
     const label = Object.assign(document.createElement('label'), { className: 'prompt-field', textContent: field.label })
-    const input = Object.assign(document.createElement('input'), { type: field.type === 'password' ? 'password' : 'text', value: field.value ?? '', spellcheck: false })
-    label.append(input)
+    const input = Object.assign(document.createElement('input'), { type: field.type === 'password' ? 'password' : 'text', value: field.value ?? '', placeholder: field.placeholder ?? '', spellcheck: false })
+    if (field.type === 'password' && field.value) {
+      const row = Object.assign(document.createElement('div'), { className: 'prompt-field-row' })
+      const reveal = Object.assign(document.createElement('button'), { type: 'button', className: 'btn secondary prompt-reveal', textContent: 'Show' })
+      reveal.addEventListener('click', (e) => {
+        e.preventDefault()
+        const hidden = input.type === 'password'
+        input.type = hidden ? 'text' : 'password'
+        reveal.textContent = hidden ? 'Hide' : 'Show'
+      })
+      row.append(input, reveal)
+      label.append(row)
+    } else {
+      label.append(input)
+    }
     el.append(label)
     inputs.set(field.id, input)
   }
-  const collect = () => Object.fromEntries([...inputs].map(([id, input]) => [id, input.value]))
+
+  const ticks = new Map()
+  if (data.checklist) {
+    const list = Object.assign(document.createElement('div'), { className: 'prompt-checklist' })
+    for (const item of data.checklist) {
+      const row = Object.assign(document.createElement('label'), { className: 'prompt-checklist-row' })
+      const tick = Object.assign(document.createElement('input'), { type: 'checkbox', checked: true })
+      const words = document.createElement('span')
+      words.append(
+        Object.assign(document.createElement('span'), { className: 'prompt-checklist-label', textContent: item.label }),
+        Object.assign(document.createElement('span'), { className: 'prompt-checklist-sub', textContent: item.sub ?? '' }),
+      )
+      row.append(tick, words)
+      list.append(row)
+      ticks.set(item.id, tick)
+    }
+    el.append(list)
+  }
+  const collect = () => ({
+    ...Object.fromEntries([...inputs].map(([id, input]) => [id, input.value])),
+    ...(data.checklist ? { picked: [...ticks].filter(([, tick]) => tick.checked).map(([id]) => id) } : {}),
+  })
 
   const buttons = document.createElement('div')
   buttons.className = 'prompt-buttons'
@@ -1553,7 +1692,7 @@ function showPrompt(data) {
   promptsEl.append(el)
   syncExpanded()
 
-  const first = inputs.values().next().value
+  const first = data.quiet ? null : inputs.values().next().value
   if (first) {
     first.focus()
     first.select()

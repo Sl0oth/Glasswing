@@ -75,7 +75,7 @@ const TOGGLE_PICTURE_IN_PICTURE = `(() => {
 })()`
 
 class Tab {
-  constructor(shell, { url, webContents, title, lazy = false, openerId = null } = {}) {
+  constructor(shell, { url, webContents, title, lazy = false, openerId = null, lastSeen, seenMs } = {}) {
     this.shell = shell
     this.openerId = openerId
     this.view = webContents
@@ -97,7 +97,10 @@ class Tab {
     this.reportedLinksAcross = false
     this.capture = noCapture()
     this.sleeping = false
-    this.lastSeen = Date.now()
+    this.lastSeen = Number.isFinite(lastSeen) ? lastSeen : Date.now()
+    this.seenMs = Number.isFinite(seenMs) ? seenMs : 0 // how long it's been on screen, all told
+    this.seenSince = null
+    this.groupId = null
 
     this.view.setBackgroundColor(TRANSPARENT)
     this.bindEvents()
@@ -129,6 +132,20 @@ class Tab {
     this.applyBackground(url)
     // Load failures are reported through `did-fail-load`.
     this.webContents.loadURL(url).catch(() => {})
+  }
+
+  cameIntoView(now = Date.now()) {
+    this.seenSince ??= now
+  }
+
+  wentOutOfView(now = Date.now()) {
+    this.seenMs = this.totalSeenMs(now)
+    this.seenSince = null
+    this.lastSeen = now
+  }
+
+  totalSeenMs(now = Date.now()) {
+    return this.seenMs + (this.seenSince == null ? 0 : now - this.seenSince)
   }
 
   /** Lazily restored tabs load once they're first shown; crashed background tabs recover the same way. */
@@ -554,6 +571,7 @@ class Tab {
       crashed: alive && wc.isCrashed() && !this.sleeping,
       sleeping: this.sleeping,
       blocked: blocker.countsFor(this.id),
+      group: this.groupId,
       split: this.split ? (this.split.left === this.id ? 'left' : 'right') : null,
       splitPartner: this.split ? (this.split.left === this.id ? this.split.right : this.split.left) : null,
     }

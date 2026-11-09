@@ -30,6 +30,114 @@ body {
   background: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(255, 255, 255, 0.04), transparent 70%);
 }
 
+/* ── Background ────────────────────────────────────── */
+
+/* A few faint lights drift behind everything and tiny specks float up. They only move,
+   so the screen doesn't have to be repainted, and a tab you're not looking at doesn't animate. */
+.ambient {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.glow {
+  position: absolute;
+  width: 60vmax;
+  height: 60vmax;
+  border-radius: 50%;
+  opacity: 0;
+  will-change: transform;
+  animation: glow-in 2.4s 0.2s ease-out forwards, drift var(--drift, 60s) ease-in-out infinite alternate;
+}
+
+.glow.one {
+  top: -30vmax;
+  left: -18vmax;
+  background: radial-gradient(circle, rgba(10, 132, 255, 0.16), transparent 62%);
+  --drift: 58s;
+}
+
+.glow.two {
+  top: -12vmax;
+  right: -28vmax;
+  background: radial-gradient(circle, rgba(124, 77, 255, 0.13), transparent 62%);
+  --drift: 72s;
+  animation-delay: 0.4s, -24s;
+}
+
+.glow.three {
+  bottom: -38vmax;
+  left: 18vw;
+  background: radial-gradient(circle, rgba(48, 209, 200, 0.09), transparent 62%);
+  --drift: 84s;
+  animation-delay: 0.6s, -50s;
+}
+
+.mote {
+  position: absolute;
+  bottom: -8px;
+  left: var(--x);
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: 0 0 6px rgba(160, 200, 255, 0.6);
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: float var(--d) var(--w) linear infinite;
+}
+
+@keyframes glow-in {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes drift {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(6vmax, 4vmax) scale(1.08);
+  }
+  100% {
+    transform: translate(-4vmax, 7vmax) scale(0.94);
+  }
+}
+
+@keyframes float {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0);
+  }
+  12% {
+    opacity: 0.7;
+  }
+  50% {
+    transform: translate(18px, -50vh);
+  }
+  88% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-10px, -100vh);
+  }
+}
+
+/* Windows' "Animation effects" switch: the lights stay, still. */
+@media (prefers-reduced-motion: reduce) {
+  .glow {
+    animation: none;
+    opacity: 1;
+  }
+  .mote {
+    display: none;
+  }
+}
+
 .private-note {
   max-width: 560px;
   padding: 14px 18px;
@@ -60,6 +168,8 @@ body {
 }
 
 main {
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
   display: flex;
   flex-direction: column;

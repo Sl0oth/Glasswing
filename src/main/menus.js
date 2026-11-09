@@ -170,6 +170,7 @@ function tabContextMenu(shell, id, x, y) {
   if (!tab) return
   const wc = tab.webContents
   const index = shell.order.indexOf(id)
+  const otherGroups = [...shell.groups.values()].filter((group) => group.id !== tab.groupId)
   showMenu(shell, [
     { label: 'Reload', click: () => (tab.ensureLoaded(), wc.reload()) },
     { label: 'Duplicate', click: () => shell.duplicateTab(id) },
@@ -195,11 +196,80 @@ function tabContextMenu(shell, id, x, y) {
         ]),
     { label: 'Move to New Window', enabled: shell.order.length > 1, click: () => shell.moveToNewWindow(tab) },
     { type: 'separator' },
+    { label: 'Add to New Group…', click: () => newGroupFor(shell, tab) },
+    ...(otherGroups.length
+      ? [{ label: 'Add to Group', submenu: otherGroups.map((group) => ({ label: group.name || 'Unnamed group', icon: groupDot(group.color), click: () => shell.setTabGroup(tab, group.id) })) }]
+      : []),
+    ...(tab.groupId != null ? [{ label: 'Remove from Group', click: () => shell.setTabGroup(tab, null) }] : []),
+    { type: 'separator' },
     { label: 'Close Tab', ...accel('CmdOrCtrl+W'), click: () => shell.closeTab(id) },
     { label: 'Close Other Tabs', enabled: shell.order.length > 1, click: () => shell.closeOtherTabs(id) },
     { label: 'Close Tabs to the Right', enabled: index < shell.order.length - 1, click: () => shell.closeTabsToRight(id) },
     { type: 'separator' },
     { label: 'Reopen Closed Tab', ...accel('CmdOrCtrl+Shift+T'), enabled: shell.closedTabs.length > 0, click: () => shell.reopenClosedTab() },
+  ], { x, y })
+}
+
+const GROUP_DOT_COLORS = { blue: '#4c9bff', purple: '#a78bfa', pink: '#f472b6', green: '#4ade80', orange: '#fb923c', red: '#f87171', yellow: '#facc15', gray: '#a1a1aa' }
+const groupDot = (color) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5" fill="${GROUP_DOT_COLORS[color]}"/></svg>`)}`
+
+async function askGroupName(shell, title, value, confirm) {
+  const { button, values } = await require('./prompts').ask(shell, {
+    title,
+    fields: [{ id: 'name', label: 'Name', value, placeholder: 'Optional' }],
+    buttons: [
+      { id: 'cancel', label: 'Cancel', style: 'secondary' },
+      { id: 'ok', label: confirm, style: 'primary' },
+    ],
+    cancelId: 'cancel',
+  })
+  return button === 'ok' ? String(values.name ?? '').trim().slice(0, 60) : null
+}
+
+async function newGroupFor(shell, tab) {
+  const name = await askGroupName(shell, 'New tab group', '', 'Create')
+  if (name == null || !shell.tabs.has(tab.id)) return
+  shell.setTabGroup(tab, shell.addGroup({ name }).id)
+}
+
+/** Right-click on a group's label. */
+function groupContextMenu(shell, id, x, y) {
+  const group = shell.groups.get(id)
+  if (!group) return
+  showMenu(shell, [
+    { label: group.collapsed ? 'Show Tabs' : 'Hide Tabs', click: () => shell.toggleGroup(id) },
+    {
+      label: 'Rename…',
+      click: async () => {
+        const name = await askGroupName(shell, 'Rename group', group.name, 'Save')
+        if (name == null) return
+        group.name = name
+        shell.scheduleState()
+      },
+    },
+    {
+      label: 'Color',
+      submenu: Object.keys(GROUP_DOT_COLORS).map((color) => ({
+        label: color.charAt(0).toUpperCase() + color.slice(1),
+        icon: groupDot(color),
+        type: 'radio',
+        checked: group.color === color,
+        click: () => {
+          group.color = color
+          shell.scheduleState()
+        },
+      })),
+    },
+    { type: 'separator' },
+    {
+      label: 'New Tab in Group',
+      click: () => {
+        const members = shell.order.filter((each) => shell.tabs.get(each).groupId === id)
+        shell.createTab({ groupId: id, index: shell.order.indexOf(members.at(-1)) + 1 })
+      },
+    },
+    { label: 'Ungroup', click: () => shell.ungroup(id) },
+    { label: 'Close Group', click: () => shell.closeGroup(id) },
   ], { x, y })
 }
 
@@ -321,6 +391,12 @@ function runAction(shell, action) {
       store.set('splitLinks', store.get('splitLinks') === false)
       shell.constructor.all.forEach((each) => each.scheduleState())
     },
+    'toggle-email-codes': () => {
+      const store = require('./store')
+      store.set('emailCodes', store.get('emailCodes') === false)
+      shell.constructor.all.forEach((each) => each.scheduleState())
+    },
+    'clean-up-tabs': () => require('./tab-cleanup').run(shell).catch((err) => console.error('Could not clean up tabs:', err)),
     find: () => tab && shell.openFind(),
     'zoom-in': () => tab?.zoom(1),
     'zoom-out': () => tab?.zoom(-1),
@@ -399,6 +475,7 @@ module.exports = {
   pageContextMenu,
   tabContextMenu,
   newTabButtonMenu,
+  groupContextMenu,
   runAction,
   selectMenuItem,
   toggleFavorite,

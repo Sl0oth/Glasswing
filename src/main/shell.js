@@ -58,6 +58,10 @@ function boundsAreVisible(bounds) {
   })
 }
 
+const GROUP_COLORS = ['blue', 'purple', 'pink', 'green', 'orange', 'red', 'yellow', 'gray']
+const SEEN_COUNT_LIMIT_MS = 60_000
+let nextGroupId = 1
+
 class BrowserShell {
   static all = new Set()
   static recent = [] // most recently focused first: the closest thing to knowing which window is on top
@@ -119,7 +123,7 @@ class BrowserShell {
     return timer
   }
 
-  constructor({ urls, tabs, activeIndex = 0, bounds, maximized = false, splits, adoptTab, fullscreen, private: isPrivate = false } = {}) {
+  constructor({ urls, tabs, activeIndex = 0, bounds, maximized = false, splits, groups, adoptTab, fullscreen, private: isPrivate = false } = {}) {
     this.private = isPrivate
     this.session = isPrivate ? require('./private-session').acquire() : session.defaultSession
     this.tabs = new Map()
@@ -132,6 +136,7 @@ class BrowserShell {
     this.dropHovering = false // a tab from another window is being held over this one
     this.dropIndex = null
     this.closedTabs = []
+    this.groups = new Map() // id → { id, name, color, collapsed }, in the window's tab strip
     this.revealed = false
     this.concealing = false // sliding away; the view stays tall until the animation ends
     this.concealTimer = null
@@ -208,9 +213,18 @@ class BrowserShell {
       initial.forEach((t, i) => {
         // Restored tabs stay unloaded until selected, except the one that's visible.
         const lazy = Boolean(tabs) && i !== activeIndex
-        this.createTab({ url: t.url, title: t.title, lazy, active: false })
+        // A session from before tabs kept count has no idea how long a tab was looked at, so it can't call that brief.
+        const seenMs = tabs ? (t.seenMs ?? SEEN_COUNT_LIMIT_MS) : 0
+        this.createTab({ url: t.url, title: t.title, lazy, active: false, lastSeen: t.lastSeen, seenMs })
       })
       const created = [...this.order]
+      for (const [groupIndex, saved] of (Array.isArray(groups) ? groups : []).entries()) {
+        const members = created.filter((_, i) => initial[i].group === groupIndex)
+        if (!members.length) continue
+        const group = this.addGroup(saved)
+        for (const id of members) this.tabs.get(id).groupId = group.id
+      }
+      this.keepTogether()
       for (const s of Array.isArray(splits) ? splits : []) {
         const left = created[s?.left]
         const right = created[s?.right]
@@ -315,15 +329,19 @@ class BrowserShell {
     return this.tabs.get(this.activeId) ?? null
   }
 
-  createTab({ url, webContents, title, active = true, lazy = false, openerId = null, index } = {}) {
+  createTab({ url, webContents, title, active = true, lazy = false, openerId = null, index, lastSeen, seenMs, groupId } = {}) {
     const tab = new Tab(this, {
       url: webContents ? undefined : (url ?? NEWTAB_URL),
       webContents,
       title,
       lazy,
       openerId,
+      lastSeen,
+      seenMs,
     })
     this.tabs.set(tab.id, tab)
+    // A link opened from a tab in a group stays in that group.
+    tab.groupId = groupId ?? this.tabs.get(openerId)?.groupId ?? null
 
     let at = index ?? this.order.length
     if (index == null && openerId != null) {
@@ -337,22 +355,24 @@ class BrowserShell {
       }
     }
     this.order.splice(at, 0, tab.id)
-    this.keepSplitsTogether()
+    this.keepTogether()
 
     // Extensions can read what's in a tab, so they don't get told about private ones.
     if (!this.private) extensions.addTab(tab.webContents, this.win, this.activeTab()?.webContents)
 
-    if (active || (this.activeId == null && !lazy)) this.selectTab(tab.id)
+    // A brand new, empty tab is for typing where to go. Coming back to one later isn't.
+    if (active || (this.activeId == null && !lazy)) this.selectTab(tab.id, { typeAddress: isNewTab(tab.url) })
     else this.scheduleState()
     return tab
   }
 
-  selectTab(id) {
+  selectTab(id, { typeAddress = false } = {}) {
     const tab = this.tabs.get(id)
     if (!tab) return
     const previous = this.activeTab()
     if (previous === tab) return
 
+    if (this.groups.get(tab.groupId)?.collapsed) this.groups.get(tab.groupId).collapsed = false
     if (this.findOpen) this.closeFind({ focusPage: false })
     if (previous) this.lastActiveId = previous.id
     this.activeId = id
@@ -361,9 +381,38 @@ class BrowserShell {
 
     if (!this.private) extensions.tabSelected(tab.webContents)
 
-    if (isNewTab(tab.url)) this.focusAddressBar()
+    if (typeAddress) this.focusAddressBarOver(tab)
     else if (this.win.isFocused()) tab.webContents.focus()
     this.scheduleState()
+  }
+
+  /**
+   * A page takes the keyboard as it loads, so a new tab page would pull you straight out of the address bar.
+   * Takes it back until the page has loaded, or until you use the page yourself.
+   */
+  focusAddressBarOver(tab) {
+    this.focusAddressBar()
+    const wc = tab.webContents
+    if (!wc.isLoading()) return
+    const takeBack = () => {
+      if (!wc.isDestroyed() && wc.isFocused() && this.activeTab() === tab) this.focusAddressBar()
+    }
+    const youUsedIt = (_event, input) => {
+      if (input.type === 'mouseDown' || input.type === 'keyDown' || input.type === 'rawKeyDown') stop()
+    }
+    const finished = () => {
+      takeBack()
+      stop()
+    }
+    const stop = () => {
+      if (wc.isDestroyed()) return
+      wc.off('focus', takeBack)
+      wc.off('input-event', youUsedIt)
+      wc.off('did-stop-loading', finished)
+    }
+    wc.on('focus', takeBack)
+    wc.on('input-event', youUsedIt)
+    wc.on('did-stop-loading', finished)
   }
 
   closeTab(id) {
@@ -416,6 +465,8 @@ class BrowserShell {
     this.clearSplit(tab)
     this.order.splice(index, 1)
     this.tabs.delete(id)
+    tab.groupId = null
+    this.dropEmptyGroups()
 
     const wasShown = this.shownTabs.includes(tab)
     if (wasShown) {
@@ -428,7 +479,9 @@ class BrowserShell {
       this.activeId = null
       // Prefer the other half of a split, then the opener when closing a tab it just spawned.
       const opener = tab.openerId != null && this.tabs.has(tab.openerId) ? tab.openerId : null
-      const next = partner?.id ?? opener ?? this.order[index] ?? this.order[index - 1]
+      const onShow = (each) => !this.groups.get(this.tabs.get(each).groupId)?.collapsed
+      const nearby = [...this.order.slice(index), ...this.order.slice(0, index).reverse()]
+      const next = partner?.id ?? opener ?? nearby.find(onShow) ?? this.order[index] ?? this.order[index - 1]
       if (next != null) this.selectTab(next)
     } else if (wasShown) {
       this.layout()
@@ -451,7 +504,7 @@ class BrowserShell {
     this.tabs.set(tab.id, tab)
     const at = Number.isFinite(index) ? Math.max(0, Math.min(index, this.order.length)) : this.order.length
     this.order.splice(at, 0, tab.id)
-    this.keepSplitsTogether()
+    this.keepTogether()
     extensions.tabMoved(tab.webContents, this.win)
 
     this.selectTab(tab.id)
@@ -493,7 +546,7 @@ class BrowserShell {
   duplicateTab(id) {
     const tab = this.tabs.get(id)
     if (!tab) return
-    this.createTab({ url: tab.url, index: this.order.indexOf(id) + 1 })
+    this.createTab({ url: tab.url, index: this.order.indexOf(id) + 1, groupId: tab.groupId })
   }
 
   reopenClosedTab() {
@@ -501,13 +554,72 @@ class BrowserShell {
     if (last) this.createTab({ url: last.url, index: Math.min(last.index, this.order.length) })
   }
 
-  moveTab(id, toIndex) {
+  /** `groupId`, if given, is the group it was dropped into, or null for none. */
+  moveTab(id, toIndex, groupId) {
     const from = this.order.indexOf(id)
     if (from < 0) return
     this.order.splice(from, 1)
     this.order.splice(Math.max(0, Math.min(toIndex, this.order.length)), 0, id)
-    this.keepSplitsTogether()
+    if (groupId !== undefined) this.setTabGroup(this.tabs.get(id), this.groups.has(groupId) ? groupId : null)
+    else this.keepTogether()
     this.scheduleState()
+  }
+
+  // ── Tab groups ────────────────────────────────────────────────────────
+
+  addGroup({ name, color, collapsed } = {}) {
+    const used = [...this.groups.values()].map((g) => g.color)
+    const group = {
+      id: nextGroupId++,
+      name: String(name ?? '').trim().slice(0, 60),
+      color: GROUP_COLORS.includes(color) ? color : (GROUP_COLORS.find((c) => !used.includes(c)) ?? GROUP_COLORS[0]),
+      collapsed: Boolean(collapsed),
+    }
+    this.groups.set(group.id, group)
+    return group
+  }
+
+  /** Puts a tab in a group, along with the other half of its split, or takes them out with null. */
+  setTabGroup(tab, groupId) {
+    if (!tab) return
+    tab.groupId = groupId
+    const partner = this.partnerOf(tab)
+    if (partner) partner.groupId = groupId
+    this.keepTogether()
+    this.scheduleState()
+  }
+
+  dropEmptyGroups() {
+    const inUse = new Set([...this.tabs.values()].map((tab) => tab.groupId))
+    for (const id of this.groups.keys()) if (!inUse.has(id)) this.groups.delete(id)
+  }
+
+  /** Hides a group's tabs, or shows them. The tab you're on has to stay on show, so another one takes over from it. */
+  toggleGroup(id) {
+    const group = this.groups.get(id)
+    if (!group) return
+    if (!group.collapsed && this.activeTab()?.groupId === id) {
+      const index = this.order.indexOf(this.activeId)
+      const nearby = [...this.order.slice(index + 1), ...this.order.slice(0, index).reverse()]
+      const next = nearby.find((each) => {
+        const other = this.tabs.get(each).groupId
+        return other !== id && !this.groups.get(other)?.collapsed
+      })
+      if (next != null) this.selectTab(next)
+      else this.createTab()
+    }
+    group.collapsed = !group.collapsed
+    this.scheduleState()
+  }
+
+  ungroup(id) {
+    for (const tab of this.tabs.values()) if (tab.groupId === id) tab.groupId = null
+    this.dropEmptyGroups()
+    this.scheduleState()
+  }
+
+  closeGroup(id) {
+    for (const each of [...this.order]) if (this.tabs.get(each)?.groupId === id) this.closeTab(each)
   }
 
   // ── Split view ────────────────────────────────────────────────────────
@@ -523,13 +635,21 @@ class BrowserShell {
     if (partner) partner.split = null
   }
 
-  /** The two sides of a split sit next to each other in the tab strip, left one first. */
-  keepSplitsTogether() {
+  /** The two sides of a split sit next to each other in the tab strip, left one first, and so do a group's tabs. */
+  keepTogether() {
     for (const id of [...this.order]) {
       const split = this.tabs.get(id)?.split
       if (split?.left !== id) continue
       this.order.splice(this.order.indexOf(split.right), 1)
       this.order.splice(this.order.indexOf(id) + 1, 0, split.right)
+    }
+    this.dropEmptyGroups()
+    for (const groupId of this.groups.keys()) {
+      const members = this.order.filter((id) => this.tabs.get(id)?.groupId === groupId)
+      const at = this.order.indexOf(members[0])
+      const rest = this.order.filter((id) => !members.includes(id))
+      rest.splice(at, 0, ...members)
+      this.order.splice(0, this.order.length, ...rest)
     }
   }
 
@@ -539,11 +659,18 @@ class BrowserShell {
     if (!left || !right || left === right) return
     this.clearSplit(left)
     this.clearSplit(right)
+    // The two sides show and hide together, so they share a group.
+    if (left.groupId !== right.groupId) {
+      const groupId = left.groupId ?? right.groupId
+      left.groupId = groupId
+      right.groupId = groupId
+      if (this.groups.get(groupId)) this.groups.get(groupId).collapsed = false
+    }
     const r = Number.isFinite(ratio) ? ratio : 0.5
     const pair = { left: leftId, right: rightId, ratio: Math.min(1 - SPLIT_MIN_RATIO, Math.max(SPLIT_MIN_RATIO, r)) }
     left.split = pair
     right.split = pair
-    this.keepSplitsTogether()
+    this.keepTogether()
   }
 
   /** Who a tab would share the window with: what you're looking at, or failing that the last tab or a neighbor. */
@@ -597,7 +724,7 @@ class BrowserShell {
     if (!split) return
     const before = this.shownTabs.map((tab) => [tab, tab.view.getBounds().x])
     ;[split.left, split.right] = [split.right, split.left]
-    this.keepSplitsTogether()
+    this.keepTogether()
     this.layout()
     this.scheduleState()
     for (const [tab, x] of before) if (tab.rest) tab.slideIn(x - tab.rest.x)
@@ -658,12 +785,13 @@ class BrowserShell {
     for (const tab of this.shownTabs) {
       if (next.includes(tab)) continue
       this.win.contentView.removeChildView(tab.view)
-      tab.lastSeen = Date.now()
+      tab.wentOutOfView()
     }
     for (const tab of next) {
       tab.stopSlide?.() // back on screen partway through leaving it
       tab.stopSlide = null
       this.win.contentView.addChildView(tab.view)
+      tab.cameIntoView()
       tab.ensureLoaded()
     }
     this.win.contentView.addChildView(this.ui) // keep the toolbar on top
@@ -710,6 +838,11 @@ class BrowserShell {
   }
 
   selectRelative(delta) {
+    // Tabs hidden in a group get passed over.
+    const onShow = this.order.filter((id) => id === this.activeId || !this.groups.get(this.tabs.get(id).groupId)?.collapsed)
+    if (onShow.length !== this.order.length) {
+      return this.selectTab(onShow[(onShow.indexOf(this.activeId) + delta + onShow.length) % onShow.length])
+    }
     const index = this.order.indexOf(this.activeId)
     const next = this.order[(index + delta + this.order.length) % this.order.length]
     this.selectTab(next)
@@ -1093,7 +1226,9 @@ class BrowserShell {
       private: this.private,
       sleepTabs: sleepingTabs.enabled(),
       splitLinks: store.get('splitLinks') !== false,
+      emailCodes: store.get('emailCodes') !== false,
       tabs: this.order.map((id) => this.tabs.get(id).state()),
+      groups: [...this.groups.values()].map((group) => ({ ...group, count: [...this.tabs.values()].filter((tab) => tab.groupId === group.id).length })),
       activeId: this.activeId,
       chromeHidden: this.isChromeHidden(),
       revealed: this.revealed,
@@ -1138,8 +1273,12 @@ class BrowserShell {
       active: Math.max(0, this.order.indexOf(this.activeId)),
       tabs: this.order.map((id) => {
         const tab = this.tabs.get(id)
-        return { url: tab.url || NEWTAB_URL, title: tab.title }
+        // Counted up to a limit, past which it isn't brief any more, so a tab you're reading doesn't keep changing what's saved.
+        const seenMs = Math.min(SEEN_COUNT_LIMIT_MS, Math.round(tab.totalSeenMs() / 1000) * 1000)
+        const group = [...this.groups.keys()].indexOf(tab.groupId)
+        return { url: tab.url || NEWTAB_URL, title: tab.title, lastSeen: tab.lastSeen, seenMs, ...(group >= 0 ? { group } : {}) }
       }),
+      groups: [...this.groups.values()].map(({ name, color, collapsed }) => ({ name, color, collapsed })),
       splits: this.order
         .filter((id) => this.tabs.get(id).split?.left === id)
         .map((id) => {

@@ -17,7 +17,9 @@ const commands = {
   'new-tab': (shell) => shell.createTab(),
   'select-tab': (shell, id) => shell.selectTab(num(id)),
   'close-tab': (shell, id) => shell.closeTab(num(id)),
-  'move-tab': (shell, id, index) => shell.moveTab(num(id), num(index)),
+  'move-tab': (shell, id, index, groupId) => shell.moveTab(num(id), num(index), groupId === undefined ? undefined : groupId === null ? null : num(groupId)),
+  'group-toggle': (shell, id) => shell.toggleGroup(num(id)),
+  'group-menu': (shell, id, x, y) => menus.groupContextMenu(shell, num(id), num(x) || 0, num(y) || 0),
   'tab-menu': (shell, id, x, y) => menus.tabContextMenu(shell, num(id), num(x) || 0, num(y) || 0),
   'menu-select': (shell, id) => menus.selectMenuItem(shell, id == null ? null : num(id)),
   'toggle-mute': (shell, id) => {
@@ -137,6 +139,10 @@ function setupIpc() {
     return BrowserShell.fromWebContents(event.sender)?.tabs.get(event.sender.id) ?? null
   }
   ipcMain.handle('split-links:open', (event, url) => pageTab(event)?.openLinkAcross(String(url)) ?? false)
+  ipcMain.on('email-code:seen', (event) => {
+    const tab = pageTab(event)
+    if (tab) require('./email-code').offer(tab).catch((err) => console.error('Could not offer to open email:', err))
+  })
 
   ipcMain.on('backdrop:divider', (event, action, x) => {
     const shell = [...BrowserShell.all].find((s) => s.win.webContents === event.sender)

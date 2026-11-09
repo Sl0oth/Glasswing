@@ -102,7 +102,7 @@ function restoreWindows(extraUrls) {
   saved.forEach((w, i) => {
     const tabs = i === saved.length - 1 ? [...w.tabs, ...extraUrls.map((url) => ({ url }))] : w.tabs
     const activeIndex = extraUrls.length && i === saved.length - 1 ? tabs.length - 1 : w.active
-    BrowserShell.create({ tabs, activeIndex, bounds: w.bounds, maximized: w.maximized, splits: w.splits })
+    BrowserShell.create({ tabs, activeIndex, bounds: w.bounds, maximized: w.maximized, splits: w.splits, groups: w.groups })
   })
 }
 
@@ -136,6 +136,12 @@ async function start() {
     id: 'glasswing-youtube-recovery',
     type: 'frame',
     filePath: path.join(__dirname, '..', 'preload', 'youtube-recovery.js'),
+  })
+  // Not in private windows: your email isn't signed in there, and asking would mean remembering something.
+  ses.registerPreloadScript({
+    id: 'glasswing-email-code',
+    type: 'frame',
+    filePath: path.join(__dirname, '..', 'preload', 'email-code.js'),
   })
   setupPrivacy()
   applySecureDns(blocker.getSettings().secureDns)

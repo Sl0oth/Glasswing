@@ -5,6 +5,9 @@ float over the page and slide down when you touch the top edge. Safari-style com
 active tab *is* the address bar), a favorites bar, your choice of search engine, built-in ad and
 tracker blocking, and Chrome extensions installed straight from the Chrome Web Store.
 
+Because the active tab is the address bar, double-click it (or press Ctrl+L) to type an address. A single click
+leaves the keyboard where it was. The + button opens a new tab ready to type in.
+
 ## Download
 
 Get `Glasswing-Setup.exe` from the [latest release](https://github.com/Sl0oth/Glasswing/releases/latest)
@@ -128,6 +131,16 @@ just says it couldn't reach the server.
   selected. While Glasswing is over its memory budget that's after 5 minutes, longest unused first, until it's back
   under. Tabs playing sound, partway through a video, using the camera or mic, with text typed in, showing the
   result of a form, or from sites you've let send notifications stay awake. There's a switch in the ⋯ panel.
+- **Tab groups**: right-click a tab → Add to New Group. Click a group's label to hide its tabs or show them, right-click
+  it to rename, recolor, ungroup or close it, and drag tabs in and out. Groups are saved with your session.
+- **Clean Up Tabs** (⋯ menu): offers to close tabs you only looked at for up to 15 seconds and haven't been back to
+  for 15 minutes, tabs you haven't used in 3 days, and empty new tabs. You can untick any of them. Tabs in a group, tabs
+  on screen, and tabs playing something or with text typed in are never listed.
+- **Email codes**: when a page asks for a code it sent to your email, Glasswing offers to open your email next to it.
+  It asks which email you use the first time, and only saves that on your computer. The page's text stays in the page,
+  and only English pages are recognized so far. Not in private windows. There's a switch in the ⋯ panel.
+- **New tab page**: a few faint lights drift behind it and tiny specks float up. They only move, so they cost almost no
+  CPU, and they stop when Windows' animation effects are off.
 - **Animations** (`src/main/animations.js`): a download flies from the pointer to the downloads button, a closing tab's
   page drops away, and split view's pages slide in and out. They're short, nothing waits for them, and pages keep taking
   input throughout: the flying file is in a window clicks pass through. Pages move at their full size, so they don't lay
@@ -144,7 +157,8 @@ just says it couldn't reach the server.
 - **Saved data**:
   - Cookies, localStorage and IndexedDB stay on disk and are flushed on quit.
   - Session cookies survive restarts, like Chrome's "continue where you left off". They're encrypted with the OS keystore.
-- **Passwords**: offered for saving when you sign in, filled in automatically next time, and managed at ⋯ → Passwords.
+- **Passwords**: offered for saving when you sign in, showing the username and a dot for each character of the
+  password, with a Show button. Filled in automatically next time, and managed at ⋯ → Passwords.
   They're encrypted with the OS keystore (DPAPI on Windows).
 
 ## Shortcuts

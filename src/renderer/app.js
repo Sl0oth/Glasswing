@@ -578,10 +578,10 @@ function updateAddress() {
     addressIcon.innerHTML = ICONS.crashed
   } else if (info.kind === 'empty' || info.kind === 'search') {
     addressIcon.innerHTML = ICONS.search
-  } else if (info.kind === 'insecure') {
+  } else if (info.kind === 'insecure' || (info.kind === 'secure' && tab.untrustedCertificate)) {
     addressIcon.classList.add('insecure')
     addressIcon.innerHTML = ICONS.warn
-    addressIcon.title = 'Not secure'
+    addressIcon.title = info.kind === 'insecure' ? 'Not secure' : 'Certificate not trusted: you chose to open this device anyway'
   } else if (info.kind === 'extension' || info.kind === 'internal') {
     const host = parse(tab.url)?.hostname
     const fallback = host === 'history' ? ICONS.clock : host === 'passwords' ? ICONS.key : host === 'protection' ? ICONS.shield : ICONS.puzzle
@@ -589,7 +589,7 @@ function updateAddress() {
   } else {
     setIcon(addressIcon, { favicon: tab.favicon, fallback: info.kind === 'secure' ? ICONS.lock : ICONS.globe })
   }
-  if (info.kind !== 'insecure') addressIcon.title = ''
+  if (!addressIcon.classList.contains('insecure')) addressIcon.title = ''
 
   updateCapture(addressCapture, tab)
   updateAudio(addressAudio, tab)

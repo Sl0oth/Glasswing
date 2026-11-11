@@ -2802,6 +2802,66 @@ async function run() {
     await wait(200)
   }
 
+  console.log('\nDevices with their own certificate')
+  {
+    const certificates = require('../src/main/certificates')
+    const local = ['192.168.1.115', '10.0.0.1', '172.20.0.1', '127.0.0.1', '169.254.1.1', 'nas', 'printer.local', 'router.lan', '[::1]', 'fd12:3456::1']
+    const publicHosts = ['8.8.8.8', '172.32.0.1', '192.169.0.1', 'example.com', 'bank.example.com', 'localhost.evil.com', '2001:4860::8888']
+    equal('network addresses count as yours', local.filter((h) => !certificates.isLocalAddress(h)), [])
+    equal('public ones don\'t', publicHosts.filter((h) => certificates.isLocalAddress(h)), [])
+
+    const https = require('node:https')
+    const device = https.createServer({
+      key: fs.readFileSync(path.join(__dirname, 'fixtures', 'self-signed.key')),
+      cert: fs.readFileSync(path.join(__dirname, 'fixtures', 'self-signed.crt')),
+    }, (req, res) => {
+      res.setHeader('content-type', 'text/html; charset=utf-8')
+      if (req.url === '/api') return res.end('{"ok":true}')
+      res.end('<!doctype html><title>Dashboard</title><p id="d">dashboard</p>')
+    })
+    await new Promise((resolve) => device.listen(0, '127.0.0.1', resolve))
+    const dash = `https://127.0.0.1:${device.address().port}/dash/`
+    const pair = BrowserShell.create({ urls: [dash], fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    const tab = pair.activeTab()
+    const card = () => ui(pair, `document.querySelector('.prompt:not(.leaving)')?.textContent ?? ''`)
+    const press = (label) => ui(pair, `[...document.querySelectorAll('.prompt:not(.leaving) .btn')].find((b) => b.textContent === ${JSON.stringify(label)}).click()`)
+    const inPage = (code) => tab.webContents.executeJavaScript(code, true).catch(() => null)
+    check('it asks whether to open the device', await until(async () => (await card()).includes('Open this device anyway?'), 8000), await card())
+    check('the page explains why', /certificate isn’t trusted/.test(await inPage(`document.querySelector('h1')?.textContent ?? ''`)))
+    await press('Not now')
+    check('Not now puts it away', await until(async () => (await card()) === '', 2000))
+    equal('and doesn\'t open it', await inPage(`document.getElementById('d')?.textContent ?? null`), null)
+    equal('or remember anything', store.get('trustedCertificates'), undefined)
+
+    await inPage(`document.querySelector('button').click()`) // Try Again
+    check('Try Again asks again', await until(async () => (await card()).includes('Open this device anyway?'), 8000))
+    await press('Open anyway')
+    check('Open anyway opens it', await until(async () => (await inPage(`document.getElementById('d')?.textContent`)) === 'dashboard', 8000))
+    equal('and the page can talk to its device', await inPage(`fetch('/api').then((r) => r.json()).then((j) => j.ok).catch((e) => String(e))`), true)
+    equal('it remembers that one certificate', Object.keys(store.get('trustedCertificates') ?? {}), [`127.0.0.1:${device.address().port}`])
+    check('the address bar says it isn\'t trusted', await until(() => ui(pair, `document.getElementById('address-icon').classList.contains('insecure') && /Certificate not trusted/.test(document.getElementById('address-icon').title)`), 2000))
+
+    tab.webContents.loadURL(dash)
+    await wait(1500)
+    equal('next time it opens without asking', [await card(), await inPage(`document.getElementById('d')?.textContent`)], ['', 'dashboard'])
+
+    const saved = store.get('trustedCertificates')
+    store.set('trustedCertificates', { [`127.0.0.1:${device.address().port}`]: 'sha256/somethingelse' })
+    tab.webContents.loadURL(dash)
+    check('a different certificate asks again', await until(async () => (await card()).includes('Open this device anyway?'), 8000))
+    await press('Not now')
+    store.set('trustedCertificates', saved)
+
+    await require('../src/main/browsing-data').clearBrowsingData(electron.session.defaultSession, { range: 'all', cookies: true })
+    equal('clearing all cookies forgets it', store.get('trustedCertificates'), undefined)
+    pair.win.destroy()
+    device.closeAllConnections()
+    await new Promise((resolve) => device.close(resolve))
+    await wait(200)
+  }
+
   electron.screen.getCursorScreenPoint = realCursor
 
   // Let any delayed errors surface.

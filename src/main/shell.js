@@ -198,6 +198,8 @@ class BrowserShell {
     this.ui.webContents.on('before-input-event', (event, input) => {
       if (require('./shortcuts').handle(this, input)) event.preventDefault()
     })
+    // Resolves once the toolbar can show cards. Its isLoading() can stay true after that, so it isn't a guide.
+    this.uiLoaded = new Promise((resolve) => this.ui.webContents.once('did-finish-load', resolve))
     this.ui.webContents.loadURL(`glasswing://ui/index.html${isPrivate ? '?private=1' : ''}`)
 
     BrowserShell.all.add(this)

@@ -4,15 +4,16 @@ const { resolveInput, isInternal } = require('./url')
 const history = require('./history')
 const blocker = require('./blocker')
 const privacy = require('./privacy')
+const certificates = require('./certificates')
 
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5]
 const PAGE_BACKGROUND = '#ffffff'
 
 /** Renders a minimal dark error page into Chromium's (otherwise blank) error document. */
-function errorPageScript(url, code, description) {
-  const data = JSON.stringify({ url, code, description })
+function errorPageScript(url, code, description, { certificate = false } = {}) {
+  const data = JSON.stringify({ url, code, description, certificate })
   return `(() => {
-    const { url, code, description } = ${data};
+    const { url, code, description, certificate } = ${data};
     let host = url; try { host = new URL(url).host || url } catch {}
     document.title = host;
     document.documentElement.innerHTML = \`
@@ -33,7 +34,10 @@ function errorPageScript(url, code, description) {
         <code></code>
         <button>Try Again</button>
       </main>\`;
-    document.querySelector('p').textContent = 'Glasswing couldn’t reach ' + host + '.';
+    document.querySelector('p').textContent = certificate
+      ? host + ' uses a security certificate it made itself. Press Try Again to choose whether to open it anyway.'
+      : 'Glasswing couldn’t reach ' + host + '.';
+    if (certificate) document.querySelector('h1').textContent = 'This device’s certificate isn’t trusted';
     document.querySelector('code').textContent = description + ' (' + code + ')';
     document.querySelector('button').addEventListener('click', () => location.replace(url));
   })()`
@@ -136,6 +140,13 @@ class Tab {
 
   cameIntoView(now = Date.now()) {
     this.seenSince ??= now
+    const refused = this.certificateWaiting
+    this.certificateWaiting = null
+    const wc = this.webContents
+    // Only if it's still showing that device's error page.
+    if (refused && !wc.isDestroyed() && wc.getURL() === refused.url && certificates.refusedFor(wc, refused.url)) {
+      setImmediate(() => this.offerUntrustedCertificate(refused))
+    }
   }
 
   wentOutOfView(now = Date.now()) {
@@ -331,6 +342,39 @@ class Tab {
   }
 
   /** Offers a way out of a page that's stopped answering. The card goes away by itself if it recovers. */
+  /** A device on your network refused for its own certificate: ask whether to continue to it anyway. */
+  async offerUntrustedCertificate(refused) {
+    const { shell } = this
+    if (this.certificatePromptOpen) return
+    // Off screen, it waits until you look at the tab (see cameIntoView).
+    if (!shell.visibleTabs().includes(this)) {
+      this.certificateWaiting = refused
+      return
+    }
+    this.certificatePromptOpen = true
+    await shell.uiLoaded // a window still starting up can't show cards yet
+    let host = refused.url
+    try {
+      host = new URL(host).host || host
+    } catch {}
+    const { button } = await require('./prompts').ask(shell, {
+      tag: `certificate-${this.id}`,
+      title: 'Open this device anyway?',
+      message: host,
+      detail: 'It’s on your own network and uses a security certificate it made itself, which routers, printers and home servers often do. Only continue if you know this device. Glasswing will remember this certificate, and ask again if it ever changes.',
+      buttons: [
+        { id: 'back', label: 'Not now', style: 'secondary' },
+        { id: 'open', label: 'Open anyway', style: 'danger' },
+      ],
+      cancelId: 'back',
+    })
+    this.certificatePromptOpen = false
+    const wc = this.webContents
+    if (button !== 'open' || wc.isDestroyed()) return
+    certificates.trust(wc, refused)
+    wc.loadURL(refused.url).catch(() => {}) // failures come back through did-fail-load
+  }
+
   async handleFrozenPage() {
     const { shell } = this
     if (this.frozenPromptOpen || !shell.visibleTabs().includes(this)) return
@@ -491,7 +535,9 @@ class Tab {
         return
       }
       this.view.setBackgroundColor('#111113')
-      wc.executeJavaScript(errorPageScript(url, code, description)).catch(() => {})
+      const refused = certificates.refusedFor(wc, url)
+      wc.executeJavaScript(errorPageScript(url, code, description, { certificate: Boolean(refused) })).catch(() => {})
+      if (refused) this.offerUntrustedCertificate(refused)
     })
     wc.on('audio-state-changed', changed)
     wc.on('zoom-changed', (_e, direction) => this.zoom(direction === 'in' ? 1 : -1))
@@ -569,6 +615,7 @@ class Tab {
       microphone: alive && this.usingMicrophone,
       zoom: alive ? Math.round(wc.getZoomFactor() * 100) : 100,
       crashed: alive && wc.isCrashed() && !this.sleeping,
+      untrustedCertificate: alive && certificates.isOverridden(this.url, wc),
       sleeping: this.sleeping,
       blocked: blocker.countsFor(this.id),
       group: this.groupId,

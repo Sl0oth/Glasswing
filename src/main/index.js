@@ -148,6 +148,7 @@ async function start() {
     filePath: path.join(__dirname, '..', 'preload', 'email-code.js'),
   })
   setupPrivacy()
+  require('./certificates').setup()
   applySecureDns(blocker.getSettings().secureDns)
   setupSiteLogin()
   // None of these is worth failing to open a window over.

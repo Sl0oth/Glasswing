@@ -29,6 +29,7 @@ async function clearBrowsingData(session, options = {}) {
     if (since === 0) {
       await session.clearData({ dataTypes: SITE_DATA, excludeOrigins: extensionOrigins })
       fs.rmSync(path.join(app.getPath('userData'), 'session-cookies.bin'), { force: true })
+      require('./certificates').forgetAll() // devices you chose to trust despite their certificate
     } else if (visitedOrigins.length) {
       // Chromium can't clear cookies by date; clear the sites visited during the period instead.
       await session.clearData({ dataTypes: SITE_DATA, origins: visitedOrigins })

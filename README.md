@@ -142,6 +142,10 @@ just says it couldn't reach the server.
 - **Graphics acceleration** (⋯ panel): on by default. Turn it off if your computer crashes while Glasswing is open,
   for example with a `VIDEO_MEMORY_MANAGEMENT_INTERNAL` blue screen. Pages are then drawn without the graphics card,
   so videos use more of the processor. It takes a restart, and Glasswing offers one.
+- **Devices on your network**: routers, printers and home dashboards often use a certificate they made themselves.
+  For local addresses only (like `192.168.x.x`, `10.x.x.x`, `nas` or `printer.local`), Glasswing asks whether to open
+  them anyway and then remembers that exact certificate, asking again if it changes. The address bar shows a warning
+  instead of a lock. Public sites with a bad certificate are still refused. Clearing all cookies forgets these choices.
 - **New tab page**: a few faint lights drift behind it and tiny specks float up. They only move, so they cost almost no
   CPU, and they stop when Windows' animation effects are off.
 - **Animations** (`src/main/animations.js`): a download flies from the pointer to the downloads button, a closing tab's

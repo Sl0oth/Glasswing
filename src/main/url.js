@@ -1,4 +1,5 @@
-const { SEARCH_URL, SCHEME, NEWTAB_URL, EXTENSIONS_URL, HISTORY_URL, PASSWORDS_URL } = require('./constants')
+const { SCHEME, NEWTAB_URL, EXTENSIONS_URL, HISTORY_URL, PASSWORDS_URL } = require('./constants')
+const search = require('./search')
 
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i
 const BARE_SCHEME_RE = /^(about|data|mailto|view-source|javascript):/i
@@ -17,7 +18,7 @@ const ALIASES = {
 }
 
 function searchUrl(query) {
-  return SEARCH_URL.replace('%s', encodeURIComponent(query))
+  return search.current().search.replace('%s', encodeURIComponent(query))
 }
 
 /** Turns whatever was typed into the address bar into a URL. */

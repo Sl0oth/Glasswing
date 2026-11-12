@@ -11,15 +11,33 @@
     <link rel="stylesheet" href="newtab.css" />
   </head>
   <body>
+    <div class="ambient" aria-hidden="true">
+      <span class="glow one"></span>
+      <span class="glow two"></span>
+      <span class="glow three"></span>
+      <span class="mote" style="--x: 12%; --d: 26s; --w: 0s"></span>
+      <span class="mote" style="--x: 27%; --d: 34s; --w: -9s"></span>
+      <span class="mote" style="--x: 41%; --d: 30s; --w: -21s"></span>
+      <span class="mote" style="--x: 58%; --d: 38s; --w: -4s"></span>
+      <span class="mote" style="--x: 71%; --d: 28s; --w: -15s"></span>
+      <span class="mote" style="--x: 86%; --d: 36s; --w: -27s"></span>
+      <span class="mote" style="--x: 94%; --d: 32s; --w: -11s"></span>
+    </div>
     <main>
       <section class="hero">
         <div id="clock" class="clock"></div>
         <div id="greeting" class="greeting"></div>
       </section>
 
+      <section id="private-note" class="private-note" hidden>
+        <h2>Private window</h2>
+        <p>When you close every private window, Glasswing forgets the pages you visited, your cookies and logins, and anything sites stored here. It doesn’t fill in or save passwords, and extensions are off.</p>
+        <p>Files you download and favorites you add do stay. Websites, your school or workplace network and your internet provider can still see what you do.</p>
+      </section>
+
       <form id="search" class="search" autocomplete="off">
         <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.25" /><path d="M10.2 10.2L13.5 13.5" /></svg>
-        <input id="q" type="text" placeholder="Search privately with DuckDuckGo" spellcheck="false" autocomplete="off" />
+        <input id="q" type="text" placeholder="Search" spellcheck="false" autocomplete="off" />
         <div id="suggest" class="suggest" hidden></div>
       </form>
 

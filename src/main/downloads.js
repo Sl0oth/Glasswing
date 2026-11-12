@@ -17,8 +17,9 @@ function uniquePath(dir, filename) {
   return candidate
 }
 
-function snapshot() {
-  return downloads.map((d) => ({ ...d }))
+/** Private and normal windows each list only their own downloads. */
+function snapshot(isPrivate = false) {
+  return downloads.filter((d) => d.private === isPrivate).map((d) => ({ ...d }))
 }
 
 function broadcast() {
@@ -26,18 +27,18 @@ function broadcast() {
   broadcastTimer = setTimeout(() => {
     broadcastTimer = null
     const { BrowserShell } = require('./shell')
-    const list = snapshot()
-    for (const shell of BrowserShell.all) shell.sendEvent('downloads', list)
+    for (const shell of BrowserShell.all) shell.sendEvent('downloads', snapshot(shell.private))
   }, 150)
 }
 
-function setupDownloads(session) {
-  session.on('will-download', (_event, item) => {
+function setupDownloads(session, { isPrivate = false } = {}) {
+  session.on('will-download', (_event, item, webContents) => {
     const savePath = uniquePath(app.getPath('downloads'), item.getFilename())
     item.setSavePath(savePath)
 
     const entry = {
       id: nextId++,
+      private: isPrivate,
       filename: path.basename(savePath),
       path: savePath,
       url: item.getURL(),
@@ -64,9 +65,28 @@ function setupDownloads(session) {
     })
 
     const { BrowserShell } = require('./shell')
-    for (const shell of BrowserShell.all) shell.sendEvent('download-started', entry.filename)
+    // The file flies across the window it came from. Other windows just show that it arrived.
+    const origin = BrowserShell.fromWebContents(webContents)
+    for (const shell of BrowserShell.all) {
+      if (shell.private !== isPrivate) continue
+      shell.sendEvent('download-started')
+      if (shell !== origin) shell.sendEvent('download-landed')
+    }
+    if (origin?.private === isPrivate) {
+      require('./animations').flyDownload(origin, entry.filename, () => {
+        if (!origin.closed) origin.sendEvent('download-landed')
+      })
+    }
     broadcast()
   })
+}
+
+/** The last private window closed. The files stay where they were saved; only the list forgets them. */
+function forgetPrivate() {
+  for (let i = downloads.length - 1; i >= 0; i--) {
+    if (downloads[i].private) downloads.splice(i, 1)
+  }
+  broadcast()
 }
 
 function find(id) {
@@ -91,4 +111,4 @@ const actions = {
   },
 }
 
-module.exports = { setupDownloads, downloadAction: (action, id) => actions[action]?.(id), listDownloads: snapshot }
+module.exports = { setupDownloads, forgetPrivate, uniquePath, downloadAction: (action, id) => actions[action]?.(id), listDownloads: snapshot }

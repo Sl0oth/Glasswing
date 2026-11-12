@@ -1,27 +1,50 @@
 // A browser window: one transparent window, a stack of tab views, and the toolbar UI view on top.
 //
 //   ┌──────────────────────────── BrowserWindow (acrylic / vibrancy) ───┐
-//   │ ui view (transparent, topmost) — toolbar, find bar, dropdowns     │
+//   │ ui view (transparent, topmost) — floating toolbar, favorites,     │
+//   │                                  find bar, dropdowns              │
 //   │ active tab view                                                   │
 //   └───────────────────────────────────────────────────────────────────┘
 //
-// The UI view is normally just as tall as the toolbar. It temporarily grows to the full window
-// while a dropdown is open, and shrinks to a thin reveal strip in focus mode / full screen.
-const { BrowserWindow, WebContentsView, screen } = require('electron')
+// A view catches clicks across its whole rectangle, even where it's transparent. So with auto-hide
+// on, the UI view has no height at all until it's needed, and the pointer is watched from here
+// rather than through an invisible strip that would sit on top of the page. It grows to the full
+// window while a dropdown is open.
+const { BrowserWindow, ClipboardItem, WebContentsView, app, clipboard, screen, session } = require('electron')
+const fs = require('node:fs')
 const path = require('node:path')
 const {
   APP_NAME,
   NEWTAB_URL,
   TOOLBAR_HEIGHT,
+  FAVBAR_HEIGHT,
   FINDBAR_HEIGHT,
-  REVEAL_STRIP,
+  SHADOW_ROOM,
+  LOADING_STRIP,
+  REVEAL_ZONE,
+  REVEAL_ZONE_MAXIMIZED,
+  POINTER_POLL_MS,
+  CONCEAL_DELAY_MS,
+  CONCEAL_ANIMATION_MS,
+  PEEK_MS,
+  SHOW_PAGE_WAIT_MS,
+  SHOW_TIMEOUT_MS,
+  SPLIT_GAP,
+  SPLIT_MARGIN,
+  SPLIT_MIN_RATIO,
   TRANSPARENT,
 } = require('./constants')
 const { Tab } = require('./tab')
 const { isNewTab } = require('./url')
 const extensions = require('./extensions')
 const appearance = require('./appearance')
+const favorites = require('./favorites')
+const blocker = require('./blocker')
+const search = require('./search')
 const store = require('./store')
+const sleepingTabs = require('./sleeping-tabs')
+const animations = require('./animations')
+const { uniquePath } = require('./downloads')
 
 const isMac = process.platform === 'darwin'
 const isWin = process.platform === 'win32'
@@ -35,8 +58,13 @@ function boundsAreVisible(bounds) {
   })
 }
 
+const GROUP_COLORS = ['blue', 'purple', 'pink', 'green', 'orange', 'red', 'yellow', 'gray']
+const SEEN_COUNT_LIMIT_MS = 60_000
+let nextGroupId = 1
+
 class BrowserShell {
   static all = new Set()
+  static recent = [] // most recently focused first: the closest thing to knowing which window is on top
   static focused = null
   static quitting = false
 
@@ -47,6 +75,11 @@ class BrowserShell {
   static lastFocused() {
     if (BrowserShell.focused && BrowserShell.all.has(BrowserShell.focused)) return BrowserShell.focused
     return [...BrowserShell.all].at(-1) ?? null
+  }
+
+  /** Where things from outside a private window belong: links from other apps, extensions, your data. */
+  static lastNormal() {
+    return [BrowserShell.focused, ...BrowserShell.recent, ...BrowserShell.all].find((s) => s && !s.private && BrowserShell.all.has(s)) ?? null
   }
 
   static fromWindow(win) {
@@ -69,17 +102,50 @@ class BrowserShell {
   }
 
   static saveSession() {
-    const windows = [...BrowserShell.all].map((shell) => shell.serialize())
-    store.set('session', { windows })
+    const windows = [...BrowserShell.all].filter((shell) => !shell.private).map((shell) => shell.serialize())
+    // Only private windows open: what's saved already is still the session to come back to.
+    if (!windows.length) return
+    const saved = { windows }
+    if (JSON.stringify(saved) !== JSON.stringify(store.get('session'))) store.set('session', saved)
   }
 
-  constructor({ urls, tabs, activeIndex = 0, bounds, maximized = false } = {}) {
+  /** So a crash brings back what you had open, not what you had open the last time you quit. */
+  static keepSessionSaved(every = 15_000) {
+    const timer = setInterval(() => {
+      if (BrowserShell.quitting) return
+      try {
+        BrowserShell.saveSession()
+      } catch (err) {
+        console.error('Could not save the open tabs:', err)
+      }
+    }, every)
+    timer.unref?.()
+    return timer
+  }
+
+  constructor({ urls, tabs, activeIndex = 0, bounds, maximized = false, splits, groups, adoptTab, fullscreen, private: isPrivate = false } = {}) {
+    this.private = isPrivate
+    this.session = isPrivate ? require('./private-session').acquire() : session.defaultSession
     this.tabs = new Map()
     this.order = []
     this.activeId = null
+    this.lastActiveId = null
+    this.shownTabs = [] // the tabs whose views are in the window: one, or two in split view
+    this.splitArea = null
+    this.tabDragging = false // one of this window's tabs is being dragged out
+    this.dropHovering = false // a tab from another window is being held over this one
+    this.dropIndex = null
     this.closedTabs = []
+    this.groups = new Map() // id → { id, name, color, collapsed }, in the window's tab strip
     this.revealed = false
+    this.concealing = false // sliding away; the view stays tall until the animation ends
+    this.concealTimer = null
     this.uiExpanded = false
+    this.pagePressTab = null // the tab getting a press passed on from the toolbar view
+    this.uiHold = false // the address bar is being edited
+    this.peekUntil = 0
+    this.pointerLeftAt = null
+    this.floatingRects = [] // where the floating elements are, reported by the UI
     this.findOpen = false
     this.htmlFullscreen = false
     this.fullscreenForHtml = false
@@ -94,8 +160,9 @@ class BrowserShell {
       minWidth: 480,
       minHeight: 320,
       show: false,
-      fullscreen: this.appearance.fullscreen,
-      title: APP_NAME,
+      fullscreen: fullscreen ?? this.appearance.fullscreen,
+      title: isPrivate ? `${APP_NAME} (Private)` : APP_NAME,
+      icon: path.join(__dirname, '..', '..', 'assets', 'icon.png'),
       titleBarStyle: 'hidden',
       backgroundColor: process.platform === 'linux' ? '#161618' : TRANSPARENT,
       ...(isWin && { backgroundMaterial: this.appearance.material }),
@@ -113,8 +180,11 @@ class BrowserShell {
     })
     this.win.webContents.loadURL('glasswing://ui/backdrop.html')
 
+    // The toolbar draws each tab's icon, and fetching one is a visit to that site, so it shares the
+    // tabs' session: a private window's icons leave nothing behind in your normal browsing.
     this.ui = new WebContentsView({
       webPreferences: {
+        session: this.session,
         preload: path.join(__dirname, '..', 'preload', 'ui.js'),
         // The preload needs `require` for the extension toolbar (<browser-action-list>).
         sandbox: false,
@@ -128,19 +198,43 @@ class BrowserShell {
     this.ui.webContents.on('before-input-event', (event, input) => {
       if (require('./shortcuts').handle(this, input)) event.preventDefault()
     })
-    this.ui.webContents.loadURL('glasswing://ui/index.html')
+    // Resolves once the toolbar can show cards. Its isLoading() can stay true after that, so it isn't a guide.
+    this.uiLoaded = new Promise((resolve) => this.ui.webContents.once('did-finish-load', resolve))
+    this.ui.webContents.loadURL(`glasswing://ui/index.html${isPrivate ? '?private=1' : ''}`)
 
     BrowserShell.all.add(this)
     BrowserShell.focused = this
+    BrowserShell.recent.unshift(this)
     this.bindWindowEvents()
+    this.pointerTimer = setInterval(() => this.watchPointer(), POINTER_POLL_MS)
 
-    const initial = tabs ?? (urls?.length ? urls.map((url) => ({ url })) : [{ url: NEWTAB_URL }])
-    initial.forEach((t, i) => {
-      // Restored tabs stay unloaded until selected, except the one that's visible.
-      const lazy = Boolean(tabs) && i !== activeIndex
-      this.createTab({ url: t.url, title: t.title, lazy, active: false })
-    })
-    this.selectTab(this.order[Math.min(activeIndex, this.order.length - 1)] ?? this.order[0])
+    if (adoptTab) {
+      this.adoptTab(adoptTab)
+    } else {
+      const initial = tabs ?? (urls?.length ? urls.map((url) => ({ url })) : [{ url: NEWTAB_URL }])
+      initial.forEach((t, i) => {
+        // Restored tabs stay unloaded until selected, except the one that's visible.
+        const lazy = Boolean(tabs) && i !== activeIndex
+        // A session from before tabs kept count has no idea how long a tab was looked at, so it can't call that brief.
+        const seenMs = tabs ? (t.seenMs ?? SEEN_COUNT_LIMIT_MS) : 0
+        this.createTab({ url: t.url, title: t.title, lazy, active: false, lastSeen: t.lastSeen, seenMs })
+      })
+      const created = [...this.order]
+      for (const [groupIndex, saved] of (Array.isArray(groups) ? groups : []).entries()) {
+        const members = created.filter((_, i) => initial[i].group === groupIndex)
+        if (!members.length) continue
+        const group = this.addGroup(saved)
+        for (const id of members) this.tabs.get(id).groupId = group.id
+      }
+      this.keepTogether()
+      for (const s of Array.isArray(splits) ? splits : []) {
+        const left = created[s?.left]
+        const right = created[s?.right]
+        if (left != null && right != null && left !== right) this.setSplit(left, right, s.ratio)
+      }
+      this.selectTab(created[Math.min(activeIndex, created.length - 1)] ?? created[0])
+      this.syncViews() // the active tab may already have been shown, before its split was restored
+    }
 
     let shown = false
     const show = () => {
@@ -151,12 +245,28 @@ class BrowserShell {
       this.layout()
       if (isNewTab(this.activeTab()?.url)) this.focusAddressBar()
     }
-    this.ui.webContents.once('did-finish-load', show)
+    // Wait for every layer, so they don't pop in one at a time over the bare glass. A slow website
+    // only gets a short wait: its page can finish loading with the window already up.
+    let uiReady = false
+    let backdropReady = false
+    const showWhenReady = () => {
+      if (!uiReady || !backdropReady) return
+      const page = this.activeTab()?.webContents
+      if (!page || page.isDestroyed() || !page.isLoading()) return show()
+      page.once('did-stop-loading', show)
+      setTimeout(show, SHOW_PAGE_WAIT_MS)
+    }
+    this.ui.webContents.once('did-finish-load', () => {
+      uiReady = true
+      showWhenReady()
+    })
     this.win.webContents.on('did-finish-load', () => {
       this.sendBackdrop('appearance', this.appearance)
       this.layout()
+      backdropReady = true
+      showWhenReady()
     })
-    setTimeout(show, 1500)
+    setTimeout(show, SHOW_TIMEOUT_MS) // never leave a window hidden if something doesn't load
   }
 
   bindWindowEvents() {
@@ -166,12 +276,12 @@ class BrowserShell {
     win.on('maximize', () => (relayout(), this.scheduleState()))
     win.on('unmaximize', () => (relayout(), this.scheduleState()))
     win.on('enter-full-screen', () => {
-      this.revealed = false
+      this.setRevealed(false)
       relayout()
       this.scheduleState()
     })
     win.on('leave-full-screen', () => {
-      this.revealed = false
+      this.setRevealed(false)
       this.htmlFullscreen = false
       this.fullscreenForHtml = false
       relayout()
@@ -179,27 +289,39 @@ class BrowserShell {
     })
     win.on('focus', () => {
       BrowserShell.focused = this
+      BrowserShell.recent = [this, ...BrowserShell.recent.filter((s) => s !== this)]
       this.scheduleState()
     })
-    win.on('blur', () => this.scheduleState())
+    win.on('blur', () => {
+      // Switching windows mid-press: the release may never arrive, so don't leave the page waiting.
+      if (this.pagePressTab) this.forwardMouse('mouseUp', this.pagePressAt.x, this.pagePressAt.y, 0, 1)
+      this.scheduleState()
+    })
     // Mouse back/forward buttons on Windows.
     win.on('app-command', (_e, command) => {
       const tab = this.activeTab()
       if (command === 'browser-backward') tab?.webContents.navigationHistory.goBack()
       if (command === 'browser-forward') tab?.webContents.navigationHistory.goForward()
     })
+    // Its backdrop page would otherwise replace the name that says this window is private.
+    if (this.private) win.on('page-title-updated', (event) => event.preventDefault())
     win.on('close', () => {
-      if (!BrowserShell.quitting && BrowserShell.all.size === 1) BrowserShell.saveSession()
+      const lastNormal = !this.private && [...BrowserShell.all].filter((s) => !s.private).length === 1
+      if (!BrowserShell.quitting && lastNormal) BrowserShell.saveSession()
     })
     win.on('closed', () => {
       this.closed = true
+      clearInterval(this.pointerTimer)
+      clearTimeout(this.concealTimer)
       require('./prompts').cancelAll(this)
       BrowserShell.all.delete(this)
+      BrowserShell.recent = BrowserShell.recent.filter((s) => s !== this)
       if (BrowserShell.focused === this) BrowserShell.focused = null
       const tabs = [...this.tabs.values()]
       this.tabs.clear()
       for (const tab of tabs) tab.destroy()
       if (!this.ui.webContents.isDestroyed()) this.ui.webContents.close()
+      if (this.private && ![...BrowserShell.all].some((s) => s.private)) require('./private-session').end()
     })
   }
 
@@ -209,15 +331,19 @@ class BrowserShell {
     return this.tabs.get(this.activeId) ?? null
   }
 
-  createTab({ url, webContents, title, active = true, lazy = false, openerId = null, index } = {}) {
+  createTab({ url, webContents, title, active = true, lazy = false, openerId = null, index, lastSeen, seenMs, groupId } = {}) {
     const tab = new Tab(this, {
       url: webContents ? undefined : (url ?? NEWTAB_URL),
       webContents,
       title,
       lazy,
       openerId,
+      lastSeen,
+      seenMs,
     })
     this.tabs.set(tab.id, tab)
+    // A link opened from a tab in a group stays in that group.
+    tab.groupId = groupId ?? this.tabs.get(openerId)?.groupId ?? null
 
     let at = index ?? this.order.length
     if (index == null && openerId != null) {
@@ -231,67 +357,183 @@ class BrowserShell {
       }
     }
     this.order.splice(at, 0, tab.id)
+    this.keepTogether()
 
-    extensions.get()?.addTab(tab.webContents, this.win)
+    // Extensions can read what's in a tab, so they don't get told about private ones.
+    if (!this.private) extensions.addTab(tab.webContents, this.win, this.activeTab()?.webContents)
 
-    if (active || (this.activeId == null && !lazy)) this.selectTab(tab.id)
+    // A brand new, empty tab is for typing where to go. Coming back to one later isn't.
+    if (active || (this.activeId == null && !lazy)) this.selectTab(tab.id, { typeAddress: isNewTab(tab.url) })
     else this.scheduleState()
     return tab
   }
 
-  selectTab(id) {
+  selectTab(id, { typeAddress = false } = {}) {
     const tab = this.tabs.get(id)
     if (!tab) return
     const previous = this.activeTab()
     if (previous === tab) return
 
+    if (this.groups.get(tab.groupId)?.collapsed) this.groups.get(tab.groupId).collapsed = false
     if (this.findOpen) this.closeFind({ focusPage: false })
+    if (previous) this.lastActiveId = previous.id
     this.activeId = id
-    if (previous) this.win.contentView.removeChildView(previous.view)
-    this.win.contentView.addChildView(tab.view)
-    this.win.contentView.addChildView(this.ui) // keep the toolbar on top
-    tab.ensureLoaded()
+    this.syncViews()
     this.layout()
 
-    extensions.get()?.selectTab(tab.webContents)
+    if (!this.private) extensions.tabSelected(tab.webContents)
 
-    if (isNewTab(tab.url)) this.focusAddressBar()
+    if (typeAddress) this.focusAddressBarOver(tab)
     else if (this.win.isFocused()) tab.webContents.focus()
     this.scheduleState()
+  }
+
+  /**
+   * A page takes the keyboard as it loads, so a new tab page would pull you straight out of the address bar.
+   * Takes it back until the page has loaded, or until you use the page yourself.
+   */
+  focusAddressBarOver(tab) {
+    this.focusAddressBar()
+    const wc = tab.webContents
+    if (!wc.isLoading()) return
+    const takeBack = () => {
+      if (!wc.isDestroyed() && wc.isFocused() && this.activeTab() === tab) this.focusAddressBar()
+    }
+    const youUsedIt = (_event, input) => {
+      if (input.type === 'mouseDown' || input.type === 'keyDown' || input.type === 'rawKeyDown') stop()
+    }
+    const finished = () => {
+      takeBack()
+      stop()
+    }
+    const stop = () => {
+      if (wc.isDestroyed()) return
+      wc.off('focus', takeBack)
+      wc.off('input-event', youUsedIt)
+      wc.off('did-stop-loading', finished)
+    }
+    wc.on('focus', takeBack)
+    wc.on('input-event', youUsedIt)
+    wc.on('did-stop-loading', finished)
   }
 
   closeTab(id) {
     const tab = this.tabs.get(id)
     if (!tab || this.closed) return
-    const index = this.order.indexOf(id)
-    this.order.splice(index, 1)
-    this.tabs.delete(id)
-
     if (!isNewTab(tab.url)) {
-      this.closedTabs.push({ url: tab.url, title: tab.title, index })
+      this.closedTabs.push({ url: tab.url, title: tab.title, index: this.order.indexOf(id) })
       if (this.closedTabs.length > 25) this.closedTabs.shift()
     }
 
-    if (this.activeId === id) {
-      this.activeId = null
-      if (!this.win.isDestroyed()) this.win.contentView.removeChildView(tab.view)
-      // Prefer returning to the opener when closing a tab it just spawned.
-      const opener = tab.openerId != null && this.tabs.has(tab.openerId) ? tab.openerId : null
-      const next = opener ?? this.order[index] ?? this.order[index - 1]
-      if (next != null) this.selectTab(next)
-    }
+    const onScreen = this.shownTabs.includes(tab) && !this.htmlFullscreen && this.order.length > 1 && !tab.webContents.isDestroyed()
+    this.releaseTab(tab)
 
     try {
-      extensions.get()?.removeTab(tab.webContents)
+      if (!this.private) extensions.get()?.removeTab(tab.webContents)
     } catch {}
-    tab.destroy()
-
-    // Like Safari: closing the last tab closes the window.
-    if (this.order.length === 0) {
-      if (!this.win.isDestroyed()) this.win.close()
-      return
+    if (onScreen && animations.enabled()) {
+      // It drops away over the page taking its place, without holding anything up.
+      tab.webContents.setAudioMuted(true)
+      this.slideAway(tab, 0, tab.view.getBounds().height, () => tab.destroy())
+    } else {
+      tab.destroy()
     }
-    this.scheduleState()
+
+    this.closeIfEmpty()
+    if (!this.closed) this.scheduleState()
+  }
+
+  /** A page leaving the window slides off over whatever's replacing it, and is then taken out. */
+  slideAway(tab, dx, dy, done) {
+    const { contentView } = this.win
+    contentView.addChildView(tab.view)
+    contentView.addChildView(this.ui)
+    tab.slideOut(dx, dy, () => {
+      if (!this.win.isDestroyed() && !this.shownTabs.includes(tab)) contentView.removeChildView(tab.view)
+      done?.()
+    })
+  }
+
+  /** Takes a tab out of this window, without closing its page. Another tab takes its place. */
+  releaseTab(tab) {
+    const id = tab.id
+    if (tab.stopSlide) {
+      tab.stopSlide() // it may have been on its way out of view
+      tab.stopSlide = null
+      if (!this.shownTabs.includes(tab) && !this.win.isDestroyed()) this.win.contentView.removeChildView(tab.view)
+    }
+    const index = this.order.indexOf(id)
+    const partner = this.partnerOf(tab)
+    this.clearSplit(tab)
+    this.order.splice(index, 1)
+    this.tabs.delete(id)
+    tab.groupId = null
+    this.dropEmptyGroups()
+
+    const wasShown = this.shownTabs.includes(tab)
+    if (wasShown) {
+      this.shownTabs = this.shownTabs.filter((t) => t !== tab)
+      if (!this.win.isDestroyed()) this.win.contentView.removeChildView(tab.view)
+    }
+    if (this.lastActiveId === id) this.lastActiveId = null
+
+    if (this.activeId === id) {
+      this.activeId = null
+      // Prefer the other half of a split, then the opener when closing a tab it just spawned.
+      const opener = tab.openerId != null && this.tabs.has(tab.openerId) ? tab.openerId : null
+      const onShow = (each) => !this.groups.get(this.tabs.get(each).groupId)?.collapsed
+      const nearby = [...this.order.slice(index), ...this.order.slice(0, index).reverse()]
+      const next = partner?.id ?? opener ?? nearby.find(onShow) ?? this.order[index] ?? this.order[index - 1]
+      if (next != null) this.selectTab(next)
+    } else if (wasShown) {
+      this.layout()
+    }
+  }
+
+  /** Like Safari: closing the last tab closes the window. */
+  closeIfEmpty() {
+    if (this.order.length === 0 && !this.win.isDestroyed()) this.win.close()
+  }
+
+  /** Brings a tab here from another window, page and all, so nothing reloads. */
+  adoptTab(tab, index = null) {
+    const from = tab.shell
+    if (from === this) return
+    from.releaseTab(tab)
+
+    tab.shell = this
+    tab.openerId = null
+    this.tabs.set(tab.id, tab)
+    const at = Number.isFinite(index) ? Math.max(0, Math.min(index, this.order.length)) : this.order.length
+    this.order.splice(at, 0, tab.id)
+    this.keepTogether()
+    extensions.tabMoved(tab.webContents, this.win)
+
+    this.selectTab(tab.id)
+    this.peek()
+    from.closeIfEmpty()
+    if (!from.closed) from.scheduleState()
+  }
+
+  /** Gives a tab its own window, as a normal window even if this one is full screen. */
+  moveToNewWindow(tab, near = null) {
+    if (this.order.length < 2 || !this.tabs.has(tab.id)) return null
+    const roomy = !this.win.isFullScreen() && !this.win.isMaximized()
+    const [width, height] = roomy ? this.win.getSize() : [1100, 720]
+    const point = near ?? screen.getCursorScreenPoint()
+    const area = screen.getDisplayNearestPoint(point).workArea
+    const size = { width: Math.min(width, area.width), height: Math.min(height, area.height) }
+    const bounds = {
+      ...size,
+      x: Math.round(Math.max(area.x, Math.min(point.x - 120, area.x + area.width - size.width))),
+      y: Math.round(Math.max(area.y, Math.min(point.y - 20, area.y + area.height - size.height))),
+    }
+    return this.newWindow({ adoptTab: tab, bounds, fullscreen: false })
+  }
+
+  /** Another window of the same kind as this one. */
+  newWindow(options) {
+    return BrowserShell.create({ ...options, private: this.private })
   }
 
   closeOtherTabs(id) {
@@ -306,7 +548,7 @@ class BrowserShell {
   duplicateTab(id) {
     const tab = this.tabs.get(id)
     if (!tab) return
-    this.createTab({ url: tab.url, index: this.order.indexOf(id) + 1 })
+    this.createTab({ url: tab.url, index: this.order.indexOf(id) + 1, groupId: tab.groupId })
   }
 
   reopenClosedTab() {
@@ -314,27 +556,324 @@ class BrowserShell {
     if (last) this.createTab({ url: last.url, index: Math.min(last.index, this.order.length) })
   }
 
-  moveTab(id, toIndex) {
+  /** `groupId`, if given, is the group it was dropped into, or null for none. */
+  moveTab(id, toIndex, groupId) {
     const from = this.order.indexOf(id)
     if (from < 0) return
     this.order.splice(from, 1)
     this.order.splice(Math.max(0, Math.min(toIndex, this.order.length)), 0, id)
+    if (groupId !== undefined) this.setTabGroup(this.tabs.get(id), this.groups.has(groupId) ? groupId : null)
+    else this.keepTogether()
     this.scheduleState()
   }
 
+  // ── Tab groups ────────────────────────────────────────────────────────
+
+  addGroup({ name, color, collapsed } = {}) {
+    const used = [...this.groups.values()].map((g) => g.color)
+    const group = {
+      id: nextGroupId++,
+      name: String(name ?? '').trim().slice(0, 60),
+      color: GROUP_COLORS.includes(color) ? color : (GROUP_COLORS.find((c) => !used.includes(c)) ?? GROUP_COLORS[0]),
+      collapsed: Boolean(collapsed),
+    }
+    this.groups.set(group.id, group)
+    return group
+  }
+
+  /** Puts a tab in a group, along with the other half of its split, or takes them out with null. */
+  setTabGroup(tab, groupId) {
+    if (!tab) return
+    tab.groupId = groupId
+    const partner = this.partnerOf(tab)
+    if (partner) partner.groupId = groupId
+    this.keepTogether()
+    this.scheduleState()
+  }
+
+  dropEmptyGroups() {
+    const inUse = new Set([...this.tabs.values()].map((tab) => tab.groupId))
+    for (const id of this.groups.keys()) if (!inUse.has(id)) this.groups.delete(id)
+  }
+
+  /** Hides a group's tabs, or shows them. The tab you're on has to stay on show, so another one takes over from it. */
+  toggleGroup(id) {
+    const group = this.groups.get(id)
+    if (!group) return
+    if (!group.collapsed && this.activeTab()?.groupId === id) {
+      const index = this.order.indexOf(this.activeId)
+      const nearby = [...this.order.slice(index + 1), ...this.order.slice(0, index).reverse()]
+      const next = nearby.find((each) => {
+        const other = this.tabs.get(each).groupId
+        return other !== id && !this.groups.get(other)?.collapsed
+      })
+      if (next != null) this.selectTab(next)
+      else this.createTab()
+    }
+    group.collapsed = !group.collapsed
+    this.scheduleState()
+  }
+
+  ungroup(id) {
+    for (const tab of this.tabs.values()) if (tab.groupId === id) tab.groupId = null
+    this.dropEmptyGroups()
+    this.scheduleState()
+  }
+
+  closeGroup(id) {
+    for (const each of [...this.order]) if (this.tabs.get(each)?.groupId === id) this.closeTab(each)
+  }
+
+  // ── Split view ────────────────────────────────────────────────────────
+
+  partnerOf(tab) {
+    if (!tab?.split) return null
+    return this.tabs.get(tab.split.left === tab.id ? tab.split.right : tab.split.left) ?? null
+  }
+
+  clearSplit(tab) {
+    const partner = this.partnerOf(tab)
+    tab.split = null
+    if (partner) partner.split = null
+  }
+
+  /** The two sides of a split sit next to each other in the tab strip, left one first, and so do a group's tabs. */
+  keepTogether() {
+    for (const id of [...this.order]) {
+      const split = this.tabs.get(id)?.split
+      if (split?.left !== id) continue
+      this.order.splice(this.order.indexOf(split.right), 1)
+      this.order.splice(this.order.indexOf(id) + 1, 0, split.right)
+    }
+    this.dropEmptyGroups()
+    for (const groupId of this.groups.keys()) {
+      const members = this.order.filter((id) => this.tabs.get(id)?.groupId === groupId)
+      const at = this.order.indexOf(members[0])
+      const rest = this.order.filter((id) => !members.includes(id))
+      rest.splice(at, 0, ...members)
+      this.order.splice(0, this.order.length, ...rest)
+    }
+  }
+
+  setSplit(leftId, rightId, ratio = 0.5) {
+    const left = this.tabs.get(leftId)
+    const right = this.tabs.get(rightId)
+    if (!left || !right || left === right) return
+    this.clearSplit(left)
+    this.clearSplit(right)
+    // The two sides show and hide together, so they share a group.
+    if (left.groupId !== right.groupId) {
+      const groupId = left.groupId ?? right.groupId
+      left.groupId = groupId
+      right.groupId = groupId
+      if (this.groups.get(groupId)) this.groups.get(groupId).collapsed = false
+    }
+    const r = Number.isFinite(ratio) ? ratio : 0.5
+    const pair = { left: leftId, right: rightId, ratio: Math.min(1 - SPLIT_MIN_RATIO, Math.max(SPLIT_MIN_RATIO, r)) }
+    left.split = pair
+    right.split = pair
+    this.keepTogether()
+  }
+
+  /** Who a tab would share the window with: what you're looking at, or failing that the last tab or a neighbor. */
+  splitPartnerFor(id) {
+    if (this.activeId !== id && this.tabs.has(this.activeId)) return this.activeId
+    if (this.lastActiveId !== id && this.tabs.has(this.lastActiveId)) return this.lastActiveId
+    const index = this.order.indexOf(id)
+    return this.order[index + 1] ?? this.order[index - 1] ?? null
+  }
+
+  /** Shows `id` on one side of the window and `partnerId` on the other, with `id` in focus. */
+  splitWith(id, partnerId, side = 'right') {
+    if (id === partnerId || !this.tabs.has(id) || !this.tabs.has(partnerId)) return
+    const shownBefore = [...this.shownTabs]
+    if (side === 'left') this.setSplit(id, partnerId)
+    else this.setSplit(partnerId, id)
+    if (this.activeId === id) this.syncViews()
+    else this.selectTab(id)
+    this.layout()
+    this.scheduleState()
+
+    // Whichever page is new to the window comes in from its own side.
+    const { width } = this.win.getContentBounds()
+    for (const tab of this.visibleTabs()) {
+      if (shownBefore.includes(tab) || !tab.rest) continue
+      tab.slideIn(tab.split?.left === tab.id ? -(tab.rest.x + tab.rest.width) : width - tab.rest.x)
+    }
+  }
+
+  unsplit(id = this.activeId) {
+    const tab = this.tabs.get(id)
+    if (!tab?.split) return
+    const shownBefore = [...this.shownTabs]
+    const leftBefore = tab.split.left
+    this.clearSplit(tab)
+    this.syncViews()
+    this.layout()
+    this.scheduleState()
+
+    // The page that's no longer on screen goes back out through its own side.
+    const { width } = this.win.getContentBounds()
+    for (const gone of shownBefore) {
+      if (this.shownTabs.includes(gone)) continue
+      const bounds = gone.view.getBounds()
+      this.slideAway(gone, gone.id === leftBefore ? -(bounds.x + bounds.width) : width - bounds.x, 0)
+    }
+  }
+
+  swapSplit(id = this.activeId) {
+    const split = this.tabs.get(id)?.split
+    if (!split) return
+    const before = this.shownTabs.map((tab) => [tab, tab.view.getBounds().x])
+    ;[split.left, split.right] = [split.right, split.left]
+    this.keepTogether()
+    this.layout()
+    this.scheduleState()
+    for (const [tab, x] of before) if (tab.rest) tab.slideIn(x - tab.rest.x)
+  }
+
+  /** Split View from the menu or keyboard: on with the most recent tab, or a new one; off if it's on. */
+  toggleSplit() {
+    const active = this.activeTab()
+    if (!active) return
+    if (active.split) return this.unsplit(active.id)
+    const partnerId = this.splitPartnerFor(active.id)
+    if (partnerId != null) {
+      this.splitWith(active.id, partnerId, 'left')
+      return
+    }
+    const fresh = this.createTab({ active: false })
+    this.splitWith(fresh.id, active.id, 'right')
+  }
+
+  /** The divider, dragged to `x` in window coordinates. */
+  dragSplitDivider(x) {
+    const split = this.activeTab()?.split
+    if (!split || !this.splitArea || !Number.isFinite(x)) return
+    const ratio = (x - this.splitArea.x) / this.splitArea.width
+    split.ratio = Math.min(1 - SPLIT_MIN_RATIO, Math.max(SPLIT_MIN_RATIO, ratio))
+    this.layout()
+  }
+
+  resetSplitDivider() {
+    const split = this.activeTab()?.split
+    if (!split) return
+    split.ratio = 0.5
+    this.layout()
+  }
+
+  /** Focus moved to the other side of the split, so that's the tab the toolbar is about now. */
+  paneFocused(tab) {
+    if (!tab.split || this.activeId === tab.id || !this.shownTabs.includes(tab)) return
+    if (this.findOpen) this.closeFind({ focusPage: false })
+    this.lastActiveId = this.activeId
+    this.activeId = tab.id
+    if (!this.private) extensions.tabSelected(tab.webContents)
+    this.layout()
+    this.scheduleState()
+  }
+
+  visibleTabs() {
+    const active = this.activeTab()
+    if (!active) return []
+    if (!active.split) return [active]
+    return [this.tabs.get(active.split.left), this.tabs.get(active.split.right)].filter(Boolean)
+  }
+
+  /** Puts the visible tabs' views in the window and takes the others out. */
+  syncViews() {
+    if (this.win.isDestroyed()) return
+    const next = this.visibleTabs()
+    for (const tab of this.shownTabs) {
+      if (next.includes(tab)) continue
+      this.win.contentView.removeChildView(tab.view)
+      tab.wentOutOfView()
+    }
+    for (const tab of next) {
+      tab.stopSlide?.() // back on screen partway through leaving it
+      tab.stopSlide = null
+      this.win.contentView.addChildView(tab.view)
+      tab.cameIntoView()
+      tab.ensureLoaded()
+    }
+    this.win.contentView.addChildView(this.ui) // keep the toolbar on top
+    this.shownTabs = next
+  }
+
+  // ── Ad and tracker blocking ───────────────────────────────────────────
+
+  /** Blocking only changes what a page loads from now on, so the page on screen starts over. */
+  reloadForProtection() {
+    const tab = this.activeTab()
+    if (tab && /^https?:/.test(tab.url)) tab.webContents.reload()
+  }
+
+  setProtection(partial) {
+    blocker.set(partial)
+    this.reloadForProtection()
+  }
+
+  toggleProtectionForSite() {
+    blocker.toggleSite(this.activeTab()?.url)
+    this.reloadForProtection()
+  }
+
+  toggleProtection() {
+    const on = blocker.toggleAll()
+    this.sendEvent('flash', on ? 'Ad and tracker blocking on' : 'Ad and tracker blocking off')
+    this.peek()
+    this.reloadForProtection()
+  }
+
+  // ── Dragging a tab out ────────────────────────────────────────────────
+
+  setTabDragging(on) {
+    this.tabDragging = Boolean(on)
+  }
+
+  /** A tab from another window is held over this one, at `x` (null when it leaves). */
+  setDropHover(x) {
+    this.dropHovering = x != null
+    if (x == null) this.dropIndex = null
+    if (this.dropHovering && this.isChromeHidden()) this.setRevealed(true)
+    this.sendEvent('tab-drop-hover', x)
+  }
+
   selectRelative(delta) {
+    // Tabs hidden in a group get passed over.
+    const onShow = this.order.filter((id) => id === this.activeId || !this.groups.get(this.tabs.get(id).groupId)?.collapsed)
+    if (onShow.length !== this.order.length) {
+      return this.selectTab(onShow[(onShow.indexOf(this.activeId) + delta + onShow.length) % onShow.length])
+    }
     const index = this.order.indexOf(this.activeId)
     const next = this.order[(index + delta + this.order.length) % this.order.length]
     this.selectTab(next)
+    this.peek()
   }
 
   selectIndex(n) {
     const id = n === 9 ? this.order.at(-1) : this.order[n - 1]
-    if (id != null) this.selectTab(id)
+    if (id == null) return
+    this.selectTab(id)
+    this.peek()
   }
 
   tabChanged(tab) {
-    if (this.tabs.has(tab.id)) this.scheduleState()
+    if (!this.tabs.has(tab.id)) return
+    // The active page decides whether the favorites bar and the loading line take up room.
+    if (tab.id === this.activeId) this.layout()
+    this.scheduleState()
+  }
+
+  favoritesChanged(list) {
+    this.sendEvent('favorites', list)
+    this.layout()
+    this.scheduleState()
+    // Open new tab pages show the same list. They have no preload, so nudge them directly.
+    for (const tab of this.tabs.values()) {
+      if (tab.pendingUrl || tab.webContents.isDestroyed() || !isNewTab(tab.url)) continue
+      tab.webContents.executeJavaScript('window.dispatchEvent(new Event("favorites-changed"))').catch(() => {})
+    }
   }
 
   // ── Chrome / layout ───────────────────────────────────────────────────
@@ -343,8 +882,13 @@ class BrowserShell {
     return this.appearance.autoHide
   }
 
+  /** The favorites bar is left out on the new tab page, which already shows the same favorites. */
+  favoritesBarVisible() {
+    return this.appearance.favoritesBar && favorites.list().length > 0 && !isNewTab(this.activeTab()?.url)
+  }
+
   chromeHeight() {
-    return TOOLBAR_HEIGHT + (this.findOpen ? FINDBAR_HEIGHT : 0)
+    return TOOLBAR_HEIGHT + (this.favoritesBarVisible() ? FAVBAR_HEIGHT : 0) + (this.findOpen ? FINDBAR_HEIGHT : 0)
   }
 
   layout() {
@@ -354,13 +898,18 @@ class BrowserShell {
 
     if (this.htmlFullscreen) {
       tab?.view.setBorderRadius(0)
-      tab?.view.setBounds({ x: 0, y: 0, width, height })
-      this.ui.setBounds({ x: 0, y: 0, width, height: 0 })
+      tab?.place({ x: 0, y: 0, width, height })
+      for (const other of this.shownTabs) {
+        if (other !== tab) other.place({ x: 0, y: 0, width: 0, height: 0 })
+      }
+      // Prompts and right-click menus still have to appear over a full-screen video.
+      this.ui.setBounds({ x: 0, y: 0, width, height: this.uiExpanded ? height : 0 })
       return
     }
 
     // With the toolbar auto-hidden, the page is the only thing on screen (edge to edge) and the
-    // toolbar floats over it when revealed. Otherwise the page is a rounded card inset into the tint.
+    // toolbar's elements float over it when revealed. Otherwise the page is a rounded card inset
+    // into the tint, below the elements.
     const hidden = this.isChromeHidden()
     const gap = hidden ? 0 : this.appearance.gap
     const radius = hidden ? 0 : this.appearance.radius
@@ -372,13 +921,58 @@ class BrowserShell {
       width: Math.max(0, width - gap * 2),
       height: Math.max(0, height - top - gap),
     }
-    tab?.view.setBorderRadius(radius)
-    tab?.view.setBounds(card)
-    this.sendBackdrop('layout', { card, radius })
+    const panes = this.visibleTabs()
+    if (panes.length === 2) {
+      this.layoutSplit(panes, card, hidden)
+    } else {
+      this.splitArea = null
+      tab?.view.setBorderRadius(radius)
+      tab?.place(card)
+      this.sendBackdrop('layout', { card, radius, split: null })
+    }
 
-    let uiHeight = hidden ? (this.revealed ? chrome : REVEAL_STRIP) : chrome
+    let uiHeight = chrome
+    if (hidden) {
+      // A press passed on to the page has to stay here to hear about its release.
+      if (this.revealed || this.concealing || this.pagePressTab) uiHeight = chrome + SHADOW_ROOM
+      else uiHeight = tab?.loading ? LOADING_STRIP : 0
+    }
     if (this.uiExpanded) uiHeight = height
     this.ui.setBounds({ x: 0, y: 0, width, height: uiHeight })
+  }
+
+  layoutSplit([left, right], card, hidden) {
+    const margin = hidden ? SPLIT_MARGIN : 0
+    const area = {
+      x: card.x + margin,
+      y: card.y + margin,
+      width: Math.max(0, card.width - margin * 2),
+      height: Math.max(0, card.height - margin * 2),
+    }
+    const radius = this.appearance.radius
+    const leftWidth = Math.round((area.width - SPLIT_GAP) * left.split.ratio)
+    const leftRect = { x: area.x, y: area.y, width: leftWidth, height: area.height }
+    const rightRect = {
+      x: area.x + leftWidth + SPLIT_GAP,
+      y: area.y,
+      width: Math.max(0, area.width - leftWidth - SPLIT_GAP),
+      height: area.height,
+    }
+    left.view.setBorderRadius(radius)
+    left.place(leftRect)
+    right.view.setBorderRadius(radius)
+    right.place(rightRect)
+    this.splitArea = area
+    this.sendBackdrop('layout', {
+      card: area,
+      radius,
+      split: {
+        left: leftRect,
+        right: rightRect,
+        active: this.activeId === left.id ? 'left' : 'right',
+        divider: { x: leftRect.x + leftRect.width, y: area.y, width: SPLIT_GAP, height: area.height },
+      },
+    })
   }
 
   applyAppearance(next) {
@@ -386,7 +980,11 @@ class BrowserShell {
     this.appearance = next
     if (isWin && next.material !== previous.material) this.win.setBackgroundMaterial(next.material)
     if (next.fullscreen !== previous.fullscreen && !this.htmlFullscreen) this.win.setFullScreen(next.fullscreen)
-    if (next.autoHide !== previous.autoHide) this.revealed = false
+    if (next.autoHide !== previous.autoHide) {
+      clearTimeout(this.concealTimer)
+      this.revealed = false
+      this.concealing = false
+    }
     this.layout()
     this.sendBackdrop('appearance', next)
     this.sendEvent('appearance', next)
@@ -403,10 +1001,120 @@ class BrowserShell {
     this.layout()
   }
 
+  setHold(hold) {
+    this.uiHold = Boolean(hold)
+  }
+
+  setFloatingRects(rects) {
+    this.floatingRects = Array.isArray(rects) ? rects : []
+  }
+
+  /** Passes on a press in an empty part of the toolbar view to the page underneath it. */
+  forwardMouse(type, x, y, button, clickCount) {
+    if (![x, y, button, clickCount].every(Number.isFinite)) return
+    const contains = ({ x: left, y: top, width, height }) => x >= left && x < left + width && y >= top && y < top + height
+    if (type === 'mouseDown') this.pagePressTab = this.visibleTabs().find((tab) => contains(tab.view.getBounds())) ?? null
+    this.pagePressAt = { x, y }
+
+    const tab = this.pagePressTab
+    if (tab && !tab.webContents.isDestroyed()) {
+      const bounds = tab.view.getBounds()
+      const event = { x: x - bounds.x, y: y - bounds.y, button: ['left', 'middle', 'right'][button] ?? 'left', clickCount }
+      if (type === 'mouseDown') {
+        tab.webContents.focus()
+        tab.webContents.sendInputEvent({ ...event, type: 'mouseMove' })
+      }
+      // Without this, a page reads a move during a press as a move with nothing held: no text selecting.
+      const held = type === 'mouseMove' ? { modifiers: [`${event.button}ButtonDown`] } : {}
+      tab.webContents.sendInputEvent({ ...event, ...held, type })
+    }
+
+    if (type === 'mouseUp') {
+      this.pagePressTab = null
+      this.setRevealed(false) // the person has gone back to the page
+      this.layout()
+    }
+  }
+
   setRevealed(revealed) {
-    this.revealed = Boolean(revealed)
+    const next = Boolean(revealed)
+    if (next === this.revealed) return
+    this.revealed = next
+    this.pointerLeftAt = null
+    clearTimeout(this.concealTimer)
+    this.concealing = !next
+    if (!next) {
+      // Keep the view tall until the elements have finished sliding away.
+      this.concealTimer = setTimeout(() => {
+        this.concealing = false
+        this.layout()
+      }, CONCEAL_ANIMATION_MS)
+    }
+    if (isMac && !this.win.isDestroyed()) this.win.setWindowButtonVisibility(next || !this.isChromeHidden())
     this.layout()
     this.scheduleState()
+  }
+
+  /** Shows the toolbar briefly, for changes that happen while it's out of sight. */
+  peek() {
+    if (!this.isChromeHidden()) return
+    this.peekUntil = Date.now() + PEEK_MS
+    this.setRevealed(true)
+  }
+
+  /** Things that need the toolbar on screen whatever the pointer is doing. */
+  mustShowChrome() {
+    return (
+      this.uiHold ||
+      this.findOpen ||
+      this.tabDragging ||
+      this.dropHovering ||
+      Date.now() < this.peekUntil ||
+      isNewTab(this.activeTab()?.url) // nothing to cover, and it's where people look for the address bar
+    )
+  }
+
+  isPointerOverFloating(x, y) {
+    const margin = 8
+    return this.floatingRects.some(
+      (r) => x >= r.x - margin && x <= r.x + r.width + margin && y >= r.y - margin && y <= r.y + r.height + margin,
+    )
+  }
+
+  /** Auto-hide: brings the toolbar down at the top edge, and sends it away once it's not in use. */
+  watchPointer() {
+    if (this.closed || this.win.isDestroyed() || !this.isChromeHidden() || this.htmlFullscreen) return
+    if (!this.win.isVisible() || this.win.isMinimized() || this.pagePressTab) return
+
+    if (this.mustShowChrome()) {
+      this.pointerLeftAt = null
+      this.setRevealed(true)
+      return
+    }
+    if (this.uiExpanded) {
+      this.pointerLeftAt = null // a dropdown is open; the countdown starts over when it closes
+      return
+    }
+
+    const cursor = screen.getCursorScreenPoint()
+    const bounds = this.win.getContentBounds()
+    const x = cursor.x - bounds.x
+    const y = cursor.y - bounds.y
+    const insideX = x >= 0 && x < bounds.width
+    const zone = this.win.isMaximized() ? REVEAL_ZONE_MAXIMIZED : REVEAL_ZONE
+    const atTopEdge = insideX && y >= 0 && y <= zone
+
+    if (!this.revealed) {
+      if (atTopEdge) this.setRevealed(true)
+      return
+    }
+
+    if (atTopEdge || this.isPointerOverFloating(x, y)) {
+      this.pointerLeftAt = null
+      return
+    }
+    this.pointerLeftAt ??= Date.now()
+    if (Date.now() - this.pointerLeftAt >= CONCEAL_DELAY_MS) this.setRevealed(false)
   }
 
   /** Auto-hide toolbar on/off. Remembered, and applies to every window. */
@@ -428,6 +1136,7 @@ class BrowserShell {
       this.win.setFullScreen(false)
     }
     this.layout()
+    this.scheduleState()
   }
 
   focusAddressBar() {
@@ -444,7 +1153,7 @@ class BrowserShell {
 
   openFind() {
     this.findOpen = true
-    if (this.isChromeHidden()) this.revealed = true
+    if (this.isChromeHidden()) this.setRevealed(true)
     this.layout()
     this.scheduleState()
     this.ui.webContents.focus()
@@ -471,19 +1180,71 @@ class BrowserShell {
     wc.findInPage(text, { forward, findNext: newSession })
   }
 
+  // ── Screenshots ───────────────────────────────────────────────────────
+
+  /** Saves what's on screen in the page to Downloads, and copies it to paste somewhere. */
+  async saveScreenshot() {
+    const tab = this.activeTab()
+    if (!tab || tab.webContents.isDestroyed()) return null
+    const announce = (text) => {
+      this.sendEvent('flash', text)
+      this.peek()
+    }
+    let file, png
+    try {
+      const image = await tab.webContents.capturePage()
+      if (image.isEmpty()) throw new Error('The page gave back an empty picture')
+      let site = 'Page'
+      try {
+        site = new URL(tab.url).hostname.replace(/^www\./, '') || site
+      } catch {}
+      // The time on your clock, not UTC.
+      const now = new Date()
+      const stamp = new Date(now - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 19).replace('T', ' ').replace(/:/g, '-')
+      const folder = app.getPath('downloads')
+      await fs.promises.mkdir(folder, { recursive: true })
+      file = uniquePath(folder, `Screenshot ${site} ${stamp}.png`)
+      png = image.toPNG()
+      await fs.promises.writeFile(file, png)
+    } catch (err) {
+      console.error('Could not save a screenshot:', err)
+      announce('Couldn’t save a screenshot of this page')
+      return null
+    }
+    try {
+      await clipboard.write([new ClipboardItem({ 'image/png': new Blob([png], { type: 'image/png' }) })])
+      announce('Screenshot saved to Downloads and copied')
+    } catch (err) {
+      console.error('Could not copy the screenshot:', err) // it's still saved, which is the main thing
+      announce('Screenshot saved to Downloads')
+    }
+    return file
+  }
+
   // ── UI messaging ──────────────────────────────────────────────────────
 
   getState() {
     return {
+      private: this.private,
+      sleepTabs: sleepingTabs.enabled(),
+      splitLinks: store.get('splitLinks') !== false,
+      emailCodes: store.get('emailCodes') !== false,
+      graphics: store.get('graphicsAcceleration') !== false,
       tabs: this.order.map((id) => this.tabs.get(id).state()),
+      groups: [...this.groups.values()].map((group) => ({ ...group, count: [...this.tabs.values()].filter((tab) => tab.groupId === group.id).length })),
       activeId: this.activeId,
       chromeHidden: this.isChromeHidden(),
       revealed: this.revealed,
+      toolbarAway: this.htmlFullscreen || (this.isChromeHidden() && !this.revealed),
       focusMode: this.appearance.autoHide,
       fullscreen: this.win.isFullScreen(),
       maximized: this.win.isMaximized(),
       focused: this.win.isFocused(),
       findOpen: this.findOpen,
+      favoritesBar: this.favoritesBarVisible(),
+      favoritesBarEnabled: this.appearance.favoritesBar,
+      protection: blocker.stateFor(this.activeTab()?.url),
+      search: (({ name, host, path: searchPath, param }) => ({ name, host, path: searchPath, param }))(search.current()),
     }
   }
 
@@ -494,6 +1255,7 @@ class BrowserShell {
       this.stateQueued = false
       if (this.win.isDestroyed() || this.ui.webContents.isDestroyed()) return
       this.ui.webContents.send('ui:state', this.getState())
+      for (const tab of this.tabs.values()) tab.reportLinksAcross()
     })
   }
 
@@ -514,8 +1276,18 @@ class BrowserShell {
       active: Math.max(0, this.order.indexOf(this.activeId)),
       tabs: this.order.map((id) => {
         const tab = this.tabs.get(id)
-        return { url: tab.url || NEWTAB_URL, title: tab.title }
+        // Counted up to a limit, past which it isn't brief any more, so a tab you're reading doesn't keep changing what's saved.
+        const seenMs = Math.min(SEEN_COUNT_LIMIT_MS, Math.round(tab.totalSeenMs() / 1000) * 1000)
+        const group = [...this.groups.keys()].indexOf(tab.groupId)
+        return { url: tab.url || NEWTAB_URL, title: tab.title, lastSeen: tab.lastSeen, seenMs, ...(group >= 0 ? { group } : {}) }
       }),
+      groups: [...this.groups.values()].map(({ name, color, collapsed }) => ({ name, color, collapsed })),
+      splits: this.order
+        .filter((id) => this.tabs.get(id).split?.left === id)
+        .map((id) => {
+          const { right, ratio } = this.tabs.get(id).split
+          return { left: this.order.indexOf(id), right: this.order.indexOf(right), ratio }
+        }),
     }
   }
 }

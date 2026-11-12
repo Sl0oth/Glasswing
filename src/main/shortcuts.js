@@ -15,8 +15,12 @@ function handle(shell, input) {
   if (mod && input.shift && !input.alt) {
     switch (key) {
       case 't': return run(() => shell.reopenClosedTab())
+      case 'n': return run(() => shell.constructor.create({ private: true }))
+      case 's': return run(() => input.isAutoRepeat || shell.saveScreenshot()) // holding the keys takes one
       case 'r': return run(() => wc?.reloadIgnoringCache())
       case 'f': return run(() => shell.toggleFocusMode())
+      case 'b': return run(() => require('./menus').toggleFavoritesBar())
+      case 'a': return run(() => shell.toggleProtection())
       case 'i': return run(() => tab?.toggleDevTools())
       case 'w': return run(() => shell.win.close())
       case 'Tab': return run(() => shell.selectRelative(-1))
@@ -30,13 +34,13 @@ function handle(shell, input) {
   if (mod && !input.shift && !input.alt) {
     switch (key) {
       case 't': return run(() => shell.createTab())
-      case 'n': return run(() => shell.constructor.create())
+      case 'n': return run(() => shell.newWindow())
       case 'w': return run(() => tab && shell.closeTab(tab.id))
       case 'l': case 'k': case 'e': return run(() => shell.focusAddressBar())
       case 'r': return run(() => wc?.reload())
       case 'f': return run(() => shell.openFind())
       case 'p': return run(() => wc?.print())
-      case 'd': return run(() => require('./menus').addToFavorites(shell))
+      case 'd': return run(() => require('./menus').toggleFavorite(shell))
       case 'j': return run(() => shell.sendEvent('toggle-downloads'))
       case 'h': return run(() => require('./menus').runAction(shell, 'history'))
       case 'u': return run(() => tab && shell.createTab({ url: `view-source:${tab.url}`, openerId: tab.id }))
@@ -44,6 +48,7 @@ function handle(shell, input) {
       case '-': return run(() => tab?.zoom(-1))
       case '0': return run(() => tab?.zoom(0))
       case 'Tab': return run(() => shell.selectRelative(1))
+      case '\\': return run(() => shell.toggleSplit())
       case 'PageDown': return run(() => shell.selectRelative(1))
       case 'PageUp': return run(() => shell.selectRelative(-1))
       case '[': return isMac ? run(() => wc?.navigationHistory.goBack()) : false
@@ -59,6 +64,7 @@ function handle(shell, input) {
       case 'ArrowLeft': return run(() => wc?.navigationHistory.goBack())
       case 'ArrowRight': return run(() => wc?.navigationHistory.goForward())
       case 'Home': return run(() => tab?.loadURL(NEWTAB_URL))
+      case 'p': return run(() => input.isAutoRepeat || tab?.togglePictureInPicture())
       case 'd': return isMac ? false : run(() => shell.focusAddressBar())
     }
   }

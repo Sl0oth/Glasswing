@@ -5,9 +5,11 @@ const { fetchSuggestions } = require('./protocol')
 const { downloadAction, listDownloads } = require('./downloads')
 const { isNewTab, resolveInput } = require('./url')
 const history = require('./history')
+const favorites = require('./favorites')
 const appearance = require('./appearance')
 const prompts = require('./prompts')
 const menus = require('./menus')
+const tabDrag = require('./tab-drag')
 
 const num = (v) => (Number.isFinite(v) ? v : NaN)
 
@@ -15,7 +17,9 @@ const commands = {
   'new-tab': (shell) => shell.createTab(),
   'select-tab': (shell, id) => shell.selectTab(num(id)),
   'close-tab': (shell, id) => shell.closeTab(num(id)),
-  'move-tab': (shell, id, index) => shell.moveTab(num(id), num(index)),
+  'move-tab': (shell, id, index, groupId) => shell.moveTab(num(id), num(index), groupId === undefined ? undefined : groupId === null ? null : num(groupId)),
+  'group-toggle': (shell, id) => shell.toggleGroup(num(id)),
+  'group-menu': (shell, id, x, y) => menus.groupContextMenu(shell, num(id), num(x) || 0, num(y) || 0),
   'tab-menu': (shell, id, x, y) => menus.tabContextMenu(shell, num(id), num(x) || 0, num(y) || 0),
   'menu-select': (shell, id) => menus.selectMenuItem(shell, id == null ? null : num(id)),
   'toggle-mute': (shell, id) => {
@@ -42,7 +46,27 @@ const commands = {
   'focus-page': (shell) => shell.focusPage(),
 
   expand: (shell, expanded) => shell.setExpanded(expanded),
-  reveal: (shell, revealed) => shell.setRevealed(revealed),
+  hold: (shell, hold) => shell.setHold(hold),
+  'floating-rects': (shell, rects) => shell.setFloatingRects(rects),
+  'page-mouse': (shell, type, x, y, button, clickCount) => {
+    if (['mouseDown', 'mouseMove', 'mouseUp'].includes(type)) shell.forwardMouse(type, num(x), num(y), num(button), num(clickCount))
+  },
+
+  'protection-set': (shell, partial) => shell.setProtection(partial ?? {}),
+  'protection-toggle-site': (shell) => shell.toggleProtectionForSite(),
+
+  'tab-drag-start': (shell, id) => tabDrag.start(shell, num(id)),
+  'tab-drag-end': () => tabDrag.end(),
+  'tab-drag-cancel': () => tabDrag.cancel(),
+  'tab-drop-index': (shell, index) => {
+    shell.dropIndex = num(index)
+  },
+
+  'favorite-toggle': (shell) => menus.toggleFavorite(shell),
+  'favorite-move': (_shell, url, index) => favorites.move(url, num(index)),
+  'favorite-menu': (shell, url, x, y) => menus.favoriteContextMenu(shell, String(url), num(x) || 0, num(y) || 0),
+  'favorites-overflow': (shell, from, x, y) => menus.favoritesOverflowMenu(shell, num(from) || 0, num(x) || 0, num(y) || 0),
+  'input-menu': (shell, x, y, options) => menus.inputContextMenu(shell, num(x) || 0, num(y) || 0, options ?? {}),
 
   'find-open': (shell) => shell.openFind(),
   'find-close': (shell) => shell.closeFind(),
@@ -50,7 +74,7 @@ const commands = {
 
   download: (_shell, action, id) => downloadAction(String(action), num(id)),
 
-  'prompt-response': (shell, id, button, checked) => prompts.respond(shell, num(id), button, checked),
+  'prompt-response': (shell, id, button, checked, values) => prompts.respond(shell, num(id), button, checked, values),
 
   appearance: (_shell, partial) => appearance.update(partial),
   'appearance-reset': () => appearance.reset(),
@@ -60,16 +84,22 @@ const commands = {
     const win = shell.win
     if (action === 'close') win.close()
     else if (action === 'minimize') win.minimize()
-    else if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize()
+    else if (action === 'maximize') {
+      // Full screen can't be maximized; the green button means "back to a normal window" there.
+      if (win.isFullScreen()) win.setFullScreen(false)
+      else if (win.isMaximized()) win.unmaximize()
+      else win.maximize()
+    }
   },
 }
 
 function localSuggestions(shell, text) {
   const query = text.trim().toLowerCase()
-  if (!query) return { history: [], tabs: [], completion: null }
+  if (!query) return { favorites: [], history: [], tabs: [], completion: null }
 
   const tabs = []
   for (const s of BrowserShell.all) {
+    if (s.private !== shell.private) continue // neither kind of window gives away the other's tabs
     for (const id of s.order) {
       const tab = s.tabs.get(id)
       if (s === shell && id === shell.activeId) continue
@@ -80,16 +110,47 @@ function localSuggestions(shell, text) {
     }
   }
 
-  const { results, completion } = history.query(query, 5)
   const tabUrls = new Set(tabs.map((t) => t.url))
+  const matchingFavorites = favorites
+    .list()
+    .filter((f) => !tabUrls.has(f.url) && (f.title.toLowerCase().includes(query) || f.url.toLowerCase().includes(query)))
+    .slice(0, 3)
+
+  const { results, completion } = shell.private ? { results: [], completion: null } : history.query(query, 8)
+  const shown = new Set([...tabUrls, ...matchingFavorites.map((f) => f.url)])
   return {
     tabs: tabs.slice(0, 3),
-    history: results.filter((h) => !tabUrls.has(h.url)).slice(0, 4),
+    favorites: matchingFavorites,
+    history: results.filter((h) => !shown.has(h.url)).slice(0, 4),
     completion,
   }
 }
 
 function setupIpc() {
+  // The split view divider lives on the backdrop page, in the gap between the two pages.
+  ipcMain.on('tab:capture', (event, audio, video) => {
+    const tab = BrowserShell.fromWebContents(event.sender)?.tabs.get(event.sender.id)
+    if (!tab || event.senderFrame !== event.sender.mainFrame) return
+    tab.captureReported(num(audio), num(video))
+  })
+
+  const pageTab = (event) => {
+    if (event.senderFrame !== event.sender.mainFrame) return null
+    return BrowserShell.fromWebContents(event.sender)?.tabs.get(event.sender.id) ?? null
+  }
+  ipcMain.handle('split-links:open', (event, url) => pageTab(event)?.openLinkAcross(String(url)) ?? false)
+  ipcMain.on('email-code:seen', (event) => {
+    const tab = pageTab(event)
+    if (tab) require('./email-code').offer(tab).catch((err) => console.error('Could not offer to open email:', err))
+  })
+
+  ipcMain.on('backdrop:divider', (event, action, x) => {
+    const shell = [...BrowserShell.all].find((s) => s.win.webContents === event.sender)
+    if (!shell) return
+    if (action === 'drag') shell.dragSplitDivider(num(x))
+    else if (action === 'reset') shell.resetSplitDivider()
+  })
+
   ipcMain.on('ui:command', (event, name, ...args) => {
     const shell = BrowserShell.fromUi(event.sender)
     const command = Object.hasOwn(commands, name) ? commands[name] : null
@@ -108,7 +169,9 @@ function setupIpc() {
       case 'state':
         return shell.getState()
       case 'downloads':
-        return listDownloads()
+        return listDownloads(shell.private)
+      case 'favorites':
+        return favorites.list()
       case 'appearance':
         return {
           settings: appearance.get(),
@@ -119,7 +182,7 @@ function setupIpc() {
       case 'suggest-local':
         return localSuggestions(shell, String(args[0] ?? ''))
       case 'suggest-search':
-        return fetchSuggestions(String(args[0] ?? ''))
+        return shell.private ? [] : fetchSuggestions(String(args[0] ?? ''))
       case 'switch-to-tab': {
         const target = [...BrowserShell.all].find((s) => s.tabs.has(num(args[0])))
         target?.selectTab(num(args[0]))

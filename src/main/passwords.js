@@ -45,13 +45,19 @@ async function offerToSave(event, origin, username, password) {
   }
 
   const { BrowserShell } = require('./shell')
-  const shell = BrowserShell.fromWebContents(event.sender)
+  // Sign-in popups aren't tabs, so they fall back to the most recently used window.
+  const shell = BrowserShell.fromWebContents(event.sender) ?? BrowserShell.lastFocused()
   const host = new URL(origin).host
-  const { button } = await prompts.ask(shell, {
+  // You can check what's about to be saved and fix it, without the card taking the keyboard from the page you've landed on.
+  const { button, values } = await prompts.ask(shell, {
     origin,
     title: existing ? 'Update password?' : 'Save password?',
     message: host,
-    detail: username || 'No username detected',
+    quiet: true,
+    fields: [
+      { id: 'username', label: 'Username', value: username, placeholder: 'No username found' },
+      { id: 'password', label: 'Password', type: 'password', value: password },
+    ],
     buttons: [
       { id: 'never', label: 'Never', style: 'secondary' },
       { id: 'later', label: 'Not Now', style: 'secondary' },
@@ -63,8 +69,10 @@ async function offerToSave(event, origin, username, password) {
   if (button === 'never') {
     store.set('passwordsNever', [...new Set([...neverSave(), origin])])
   } else if (button === 'save') {
-    const fresh = entries().filter((e) => !(e.origin === origin && e.username === username))
-    fresh.push({ id: crypto.randomUUID(), origin, username, password: encrypt(password), lastUsed: Date.now() })
+    const savedUsername = String(values.username ?? username).slice(0, 256)
+    const savedPassword = String(values.password ?? '').slice(0, 1024) || password
+    const fresh = entries().filter((e) => !(e.origin === origin && e.username === savedUsername))
+    fresh.push({ id: crypto.randomUUID(), origin, username: savedUsername, password: encrypt(savedPassword), lastUsed: Date.now() })
     store.set('passwords', fresh)
   }
 }
@@ -92,11 +100,11 @@ function setupPasswords() {
   })
 }
 
-/** Summaries for the glasswing://passwords page (never includes the passwords themselves). */
+/** Summaries for the glasswing://passwords page. It gets how long each password is, and never the password. */
 function listForPage() {
   return {
     saved: entries()
-      .map(({ id, origin, username, lastUsed }) => ({ id, origin, username, lastUsed }))
+      .map(({ id, origin, username, lastUsed, password }) => ({ id, origin, username, lastUsed, length: decrypt(password)?.length ?? 0 }))
       .sort((a, b) => a.origin.localeCompare(b.origin)),
     never: neverSave(),
   }

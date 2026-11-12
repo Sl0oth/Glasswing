@@ -1,7 +1,7 @@
 'use strict'
 
 const $ = (selector) => document.querySelector(selector)
-const SEARCH_URL = 'https://duckduckgo.com/?q='
+let searchAddress = 'https://duckduckgo.com/?q=%s'
 const FAVICON_SERVICE = (host) => `https://icons.duckduckgo.com/ip3/${encodeURIComponent(host)}.ico`
 const ICON_SEARCH = '<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.25"/><path d="M10.2 10.2L13.5 13.5"/></svg>'
 const ICON_CLOSE = '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>'
@@ -22,9 +22,23 @@ function tick() {
 }
 tick()
 
+fetch('/api/private')
+  .then((res) => (res.ok ? res.json() : false))
+  .then((isPrivate) => {
+    $('#private-note').hidden = !isPrivate
+  })
+  .catch(() => {})
+
 // ── Search ─────────────────────────────────────────────
 
 const input = $('#q')
+fetch('/api/search')
+  .then((res) => res.json())
+  .then(({ name, url }) => {
+    searchAddress = url
+    input.placeholder = `Search with ${name}`
+  })
+  .catch(() => {})
 const suggest = $('#suggest')
 let phrases = []
 let selected = -1
@@ -36,10 +50,10 @@ function toUrl(text) {
   const t = text.trim()
   if (!/\s/.test(t)) {
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return t
-    if (/^localhost(:\d+)?(\/|$)/i.test(t)) return `http://${t}`
+    if (/^localhost(:\d+)?(\/|$)/i.test(t) || /^(\d{1,3}\.){3}\d{1,3}(:\d+)?([/?#].*)?$/.test(t)) return `http://${t}`
     if (/^[^\s/?#:]+\.[a-z][a-z0-9-]{1,62}(:\d+)?([/?#].*)?$/i.test(t)) return `https://${t}`
   }
-  return SEARCH_URL + encodeURIComponent(t)
+  return searchAddress.replace('%s', encodeURIComponent(t))
 }
 
 function go(text) {
@@ -123,12 +137,29 @@ function hostOf(url) {
 const TOKEN = document.querySelector('meta[name="glasswing-token"]')?.content ?? ''
 
 async function save() {
-  await fetch('/api/favorites', {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json', 'x-glasswing-token': TOKEN },
-    body: JSON.stringify(favorites),
-  })
+  try {
+    await fetch('/api/favorites', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-glasswing-token': TOKEN },
+      body: JSON.stringify(favorites),
+    })
+  } catch {
+    loadFavorites() // show what's actually saved
+  }
 }
+
+function loadFavorites() {
+  return fetch('/api/favorites')
+    .then((r) => r.json())
+    .then((list) => {
+      favorites = list
+      renderFavorites()
+    })
+    .catch(() => renderFavorites())
+}
+
+// The favorites bar and the star button change the same list. The browser fires this when they do.
+window.addEventListener('favorites-changed', loadFavorites)
 
 function tile(fav, index) {
   const a = document.createElement('a')
@@ -186,15 +217,16 @@ $('#add-form').addEventListener('submit', (e) => {
   const raw = $('#add-url').value.trim()
   if (!raw) return e.preventDefault()
   const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
+  try {
+    new URL(url)
+  } catch {
+    e.preventDefault() // not an address: leave the dialog open so it can be corrected
+    $('#add-url').focus()
+    return
+  }
   favorites.push({ title: $('#add-title').value.trim() || hostOf(url), url })
   renderFavorites()
   save()
 })
 
-fetch('/api/favorites')
-  .then((r) => r.json())
-  .then((list) => {
-    favorites = list
-    renderFavorites()
-  })
-  .catch(() => renderFavorites())
+loadFavorites()

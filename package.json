@@ -1,7 +1,7 @@
 {
   "name": "glasswing",
   "productName": "Glasswing",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "A minimalist, dark, see-through browser with floating controls, split view, built-in ad and tracker blocking, and Chrome extension support.",
   "main": "src/main/index.js",
   "scripts": {
@@ -9,7 +9,8 @@
     "dev": "electron . --enable-logging",
     "test": "electron test/smoke.js",
     "dist": "electron-builder --win --publish never",
-    "predist": "node build/patch-installer.js"
+    "predist": "node build/patch-installer.js",
+    "dist:mac": "electron-builder --mac --publish never"
   },
   "keywords": [
     "browser",
@@ -63,6 +64,34 @@
       "deleteAppDataOnUninstall": false,
       "differentialPackage": false,
       "include": "build/installer.nsh"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon-mac.png",
+      "category": "public.app-category.productivity",
+      "artifactName": "Glasswing-${arch}.${ext}",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "artifactName": "Glasswing-${arch}.${ext}",
+      "title": "Glasswing"
     },
     "publish": [
       {

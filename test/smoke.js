@@ -124,6 +124,7 @@ const server = http.createServer((req, res) => {
     res.setHeader('content-type', 'text/plain')
     return res.end('')
   }
+  if (url.pathname === '/moves-on') return res.end(page('Mail', '#fff', '<p>loading</p><script>setTimeout(() => { location = "/white" }, 300)</script>'))
   if (url.pathname.startsWith('/email-code/')) {
     return res.end(page('Sign in', '#fff', emailCodePages[decodeURIComponent(url.pathname.slice(12))] ?? ''))
   }
@@ -746,9 +747,18 @@ async function run() {
       left.keepFocusFrom(right)
       takenBack = 0
       rightWc.emit('did-stop-loading')
-      equal('it checks one last time when the page finishes', takenBack, 1)
+      equal('it checks again when the page finishes', takenBack, 1)
       rightWc.emit('focus')
-      equal('and then stops', takenBack, 1)
+      equal('and still does if the page moves on by itself', takenBack, 2)
+      rightWc.emit('did-start-loading')
+      await wait(5300)
+      rightWc.emit('focus')
+      equal('even after a while, while it\'s still loading', takenBack, 3)
+      rightWc.emit('did-stop-loading')
+      takenBack = 0
+      await wait(5300)
+      rightWc.emit('focus')
+      equal('and stops once it has stayed put for a few seconds', takenBack, 0)
       rightWc.isFocused = realFocused
       leftWc.focus = realFocus
     }
@@ -3148,6 +3158,8 @@ async function run() {
 
     const saved = store.get('trustedCertificates')
     store.set('trustedCertificates', { [`127.0.0.1:${device.address().port}`]: 'sha256/somethingelse' })
+    // A device's certificate only changes when it restarts, which drops its connections. A reused one isn't checked again.
+    device.closeAllConnections()
     tab.webContents.loadURL(dash)
     check('a different certificate asks again', await until(async () => (await card()).includes('Open this device anyway?'), 8000))
     await press('Not now')
@@ -3158,6 +3170,30 @@ async function run() {
     pair.win.destroy()
     device.closeAllConnections()
     await new Promise((resolve) => device.close(resolve))
+    await wait(200)
+  }
+
+  {
+    console.log('\nA page opened beside you')
+    const pair = BrowserShell.create({ urls: [`${base}/white`], fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    const left = pair.activeTab()
+    await until(() => !left.webContents.isLoading(), 3000)
+    const right = pair.createTab({ url: `${base}/moves-on`, active: false, openerId: left.id })
+    pair.splitWith(left.id, right.id, 'left')
+    left.webContents.focus()
+    left.keepFocusFrom(right)
+    check('it moves on by itself after loading', await until(() => right.webContents.getURL().endsWith('/white'), 3000), right.webContents.getURL())
+    await wait(300)
+    check('and you keep the keyboard', left.webContents.isFocused())
+    right.webContents.sendInputEvent({ type: 'mouseDown', x: 200, y: 200, button: 'left', clickCount: 1 })
+    right.webContents.sendInputEvent({ type: 'mouseUp', x: 200, y: 200, button: 'left', clickCount: 1 })
+    right.webContents.focus()
+    await wait(200)
+    check('until you use it yourself', right.webContents.isFocused())
+    equal('then it stops watching', right.stopKeepingFocus, null)
+    pair.win.destroy()
     await wait(200)
   }
 

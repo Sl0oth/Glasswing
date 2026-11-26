@@ -8,6 +8,12 @@ const prompts = require('./prompts')
 
 const appIcon = () => nativeImage.createFromPath(path.join(__dirname, '..', '..', 'assets', 'icon.png'))
 
+// A Mac only installs an update by itself for apps signed with a paid Apple developer certificate, which
+// Glasswing doesn't have. So on a Mac it says when there's a new version and downloads it for you instead.
+const isMac = process.platform === 'darwin'
+const RELEASES = 'https://github.com/Sl0oth/Glasswing/releases'
+const macDownloadUrl = (version) => `${RELEASES}/download/v${version}/Glasswing-${process.arch === 'arm64' ? 'arm64' : 'x64'}.dmg`
+
 const FIRST_CHECK_DELAY_MS = 20_000
 const CHECK_EVERY_MS = 4 * 60 * 60 * 1000
 
@@ -82,6 +88,20 @@ async function offerDownload(version, shell = currentShell()) {
   if (button === 'download') download()
 }
 
+async function offerMacDownload(version, shell = currentShell()) {
+  const { button } = await prompts.ask(shell, {
+    icon: appIcon(),
+    title: `Glasswing ${version} is available`,
+    message: 'Download it, then open it and drag Glasswing into Applications to replace this one. Your tabs and settings stay.',
+    buttons: [
+      { id: 'later', label: 'Later', style: 'secondary' },
+      { id: 'download', label: 'Download', style: 'primary' },
+    ],
+    cancelId: 'later',
+  })
+  if (button === 'download' && shell && !shell.closed) shell.createTab({ url: macDownloadUrl(version) })
+}
+
 function check() {
   if (!updater || readyVersion || downloading) return
   updater.checkForUpdates().catch(failed)
@@ -124,6 +144,13 @@ function start() {
   updater.on('update-available', ({ version }) => {
     const shell = manualShell
     manualShell = null
+    if (isMac) {
+      if (shell || offeredVersion !== version) {
+        offeredVersion = version
+        offerMacDownload(version, shell ?? currentShell())
+      }
+      return
+    }
     if (getMode() === 'auto') return download()
     // Once per run is enough, unless asked. The next launch offers it again.
     if (shell || offeredVersion !== version) {

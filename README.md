@@ -10,12 +10,19 @@ leaves the keyboard where it was. The + button opens a new tab ready to type in.
 
 ## Download
 
-Get `Glasswing-Setup.exe` from the [latest release](https://github.com/Sl0oth/Glasswing/releases/latest)
+**Windows:** get `Glasswing-Setup.exe` from the [latest release](https://github.com/Sl0oth/Glasswing/releases/latest)
 and run it. It installs for your Windows account, with no administrator password, then opens a short
 setup: import from Chrome, Brave or Edge, choose a look and how you browse, and choose how updates work.
 
 The installer isn't signed yet, so Windows SmartScreen may say it doesn't recognize it. Choose
 **More info**, then **Run anyway**.
+
+**Mac:** get `Glasswing-arm64.dmg` for a Mac with an Apple chip (M1 or later), or `Glasswing-x64.dmg` for
+an Intel Mac. Open it and drag Glasswing into Applications. It isn't signed with an Apple developer
+certificate, so the first time, macOS says it can't check it. Open **System Settings → Privacy & Security**,
+scroll down, and choose **Open Anyway** next to Glasswing. On a Mac, Glasswing tells you when there's a new
+version and downloads it for you, and you drag it into Applications again; it can't replace itself without
+that certificate. Your tabs and settings stay.
 
 ## Run from source
 
@@ -42,8 +49,10 @@ builds itself, also hidden. Add `--shots=folder` to see each step, which shows t
 
 1. Set the new `version` in `package.json`.
 2. `npm run dist` builds `dist/Glasswing-Setup.exe` and `dist/latest.yml`.
-3. Publish a GitHub release tagged `v` plus the version, with both files attached:
-   `gh release create v1.2.3 dist/Glasswing-Setup.exe dist/latest.yml`
+3. Make a draft release with both files: `gh release create v1.2.3 --draft dist/Glasswing-Setup.exe dist/latest.yml`
+4. Push the tag (`git tag v1.2.3 && git push origin v1.2.3`). GitHub then builds the Mac versions on one of its
+   Macs (`.github/workflows/mac.yml`) and adds them to the draft, with `latest-mac.yml` for Mac updates.
+5. When the Mac files are there, publish it: `gh release edit v1.2.3 --draft=false --latest`
 
 Installed copies find it by themselves. They read the releases without signing in, so **this only works
 while the repository is public**. With a private repository they can't see it, and checking for updates

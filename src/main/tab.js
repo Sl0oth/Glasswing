@@ -9,6 +9,8 @@ const siteIcons = require('./favicons')
 
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5]
 const PAGE_BACKGROUND = '#ffffff'
+// How long a page opened beside you must stay put before it may have the keyboard.
+const KEEP_FOCUS_AFTER_LOAD_MS = 5000
 
 /** Renders a minimal dark error page into Chromium's (otherwise blank) error document. */
 function errorPageScript(url, code, description, { certificate = false } = {}) {
@@ -299,29 +301,44 @@ class Tab {
 
   /**
    * A page gets the keyboard as it loads, but you're still on this side. Takes it back only from that page,
-   * so it can't pull you out of the address bar, and only until you use that page yourself.
+   * so it can't pull you out of the address bar, and only until you use that page yourself. Sites often move
+   * on by themselves right after loading (Gmail goes on to your inbox), and each move grabs the keyboard
+   * again, so this lasts until that page has stayed put for a few seconds.
    */
   keepFocusFrom(partner) {
+    partner.stopKeepingFocus?.()
     const wc = partner.webContents
+    let quiet = null
     const takeBack = () => {
       if (!wc.isDestroyed() && !this.webContents.isDestroyed() && wc.isFocused()) this.webContents.focus()
     }
     const youUsedIt = (_event, input) => {
       if (input.type === 'mouseDown' || input.type === 'keyDown' || input.type === 'rawKeyDown') stop()
     }
+    const started = () => clearTimeout(quiet)
+    const settled = () => {
+      clearTimeout(quiet)
+      quiet = setTimeout(stop, KEEP_FOCUS_AFTER_LOAD_MS)
+    }
     const finished = () => {
       takeBack()
-      stop()
+      settled()
     }
     const stop = () => {
+      clearTimeout(quiet)
+      if (partner.stopKeepingFocus === stop) partner.stopKeepingFocus = null
       if (wc.isDestroyed()) return
       wc.off('focus', takeBack)
       wc.off('input-event', youUsedIt)
+      wc.off('did-start-loading', started)
       wc.off('did-stop-loading', finished)
     }
+    partner.stopKeepingFocus = stop
     wc.on('focus', takeBack)
     wc.on('input-event', youUsedIt)
+    wc.on('did-start-loading', started)
     wc.on('did-stop-loading', finished)
+    if (!wc.isLoading()) settled()
     takeBack()
   }
 

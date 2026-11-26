@@ -4,6 +4,10 @@ const api = window.glasswing
 const $ = (selector, root = document) => root.querySelector(selector)
 
 const ICONS = {
+  pause: '<svg viewBox="0 0 16 16"><path d="M5.5 3.5v9M10.5 3.5v9"/></svg>',
+  play: '<svg viewBox="0 0 16 16"><path d="M5 3.2v9.6L12.5 8z"/></svg>',
+  retry: '<svg viewBox="0 0 16 16"><path d="M12.8 8a4.8 4.8 0 1 1-1.5-3.5"/><path d="M12 2.2v2.8H9.2"/></svg>',
+  more: '<svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="12.5" cy="8" r="1.1"/></svg>',
   globe: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c1.8 1.7 2.6 3.7 2.6 6S9.8 12.3 8 14M8 2C6.2 3.7 5.4 5.7 5.4 8s.8 4.3 2.6 6"/></svg>',
   lock: '<svg viewBox="0 0 16 16"><rect x="3.5" y="7" width="9" height="6.5" rx="1.6"/><path d="M5.5 7V5.3a2.5 2.5 0 0 1 5 0V7"/></svg>',
   warn: '<svg viewBox="0 0 16 16"><path d="M8 2.6l5.8 10.4H2.2z"/><path d="M8 6.8v2.6M8 11.2v.01"/></svg>',
@@ -492,6 +496,7 @@ function render() {
   body.toggle('fullscreen', Boolean(state.fullscreen))
   body.toggle('blurred', state.focused === false)
   body.toggle('page-loading', Boolean(activeTab()?.loading))
+  $('#split-btn').hidden = !activeTab()?.split // only in split view, to leave it
   const favbarWasOpen = body.contains('favbar-open')
   body.toggle('favbar-open', Boolean(state.favoritesBar))
   if (state.favoritesBar && !favbarWasOpen) fitFavorites()
@@ -954,6 +959,11 @@ window.addEventListener('mouseup', (e) => {
 $('#back').addEventListener('click', () => api.send('back'))
 $('#forward').addEventListener('click', () => api.send('forward'))
 $('#new-tab').addEventListener('click', () => api.send('new-tab'))
+$('#split-btn').addEventListener('click', () => api.send('menu-action', 'toggle-split'))
+$('#split-btn').addEventListener('contextmenu', (e) => {
+  e.preventDefault()
+  api.send('split-menu', e.clientX, e.clientY)
+})
 $('#new-tab').addEventListener('contextmenu', (e) => {
   e.preventDefault()
   const r = e.currentTarget.getBoundingClientRect()
@@ -1166,23 +1176,27 @@ function renderDownloads() {
       const ext = (d.filename.match(/\.([a-z0-9]{1,4})$/i)?.[1] ?? '').slice(0, 4)
       const inProgress = d.state === 'progressing' || d.state === 'paused'
       const meta = inProgress
-        ? `${formatBytes(d.received)}${d.total ? ` of ${formatBytes(d.total)}` : ''}`
+        ? `${d.state === 'paused' ? 'Paused · ' : ''}${formatBytes(d.received)}${d.total ? ` of ${formatBytes(d.total)}` : ''}`
         : d.state === 'completed'
-          ? formatBytes(d.received)
+          ? d.missing ? 'Deleted or moved' : formatBytes(d.received)
           : d.state === 'cancelled'
             ? 'Cancelled'
             : 'Failed'
+      const button = (action, icon, title) => `<button class="icon-btn small" data-action="${action}" title="${title}">${icon}</button>`
+      const buttons = inProgress
+        ? (d.state === 'paused' ? button('resume', ICONS.play, 'Resume') : button('pause', ICONS.pause, 'Pause')) + button('cancel', ICONS.close, 'Cancel')
+        : d.state === 'completed' && !d.missing
+          ? button('show', ICONS.folder, 'Show in folder')
+          : button('retry', ICONS.retry, d.missing ? 'Download again' : 'Retry')
       const pct = d.total ? Math.round((d.received / d.total) * 100) : 0
-      return `<div class="dl-item" data-id="${d.id}" data-state="${d.state}">
+      return `<div class="dl-item${d.missing ? ' missing' : ''}" data-id="${d.id}" data-state="${d.state}">
         <div class="dl-file-icon">${escapeHtml(ext) || ICONS.folder}</div>
         <div style="min-width:0">
           <div class="dl-name">${escapeHtml(d.filename)}</div>
           <div class="dl-meta">${meta}</div>
           ${inProgress ? `<div class="dl-bar"><div style="width:${pct}%"></div></div>` : ''}
         </div>
-        ${inProgress
-          ? `<button class="icon-btn small" data-action="cancel" title="Cancel">${ICONS.close}</button>`
-          : `<button class="icon-btn small" data-action="show" title="Show in folder">${ICONS.folder}</button>`}
+        <div class="dl-actions">${buttons}${button('menu', ICONS.more, 'More')}</div>
       </div>`
     })
     .join('')
@@ -1204,6 +1218,7 @@ function toggleDownloads(force) {
     shieldPanel.hidden = true
     renderDownloads()
     positionDownloads()
+    api.send('download', 'refresh') // notices files deleted or moved since
   }
   downloadsPanel.hidden = !open
   syncExpanded()
@@ -1215,9 +1230,19 @@ $('#downloads-list').addEventListener('click', (e) => {
   const item = e.target.closest('.dl-item')
   if (!item) return
   const id = Number(item.dataset.id)
-  const action = e.target.closest('button')?.dataset.action
-  if (action) api.send('download', action, id)
-  else if (item.dataset.state === 'completed') api.send('download', 'open', id)
+  const btn = e.target.closest('button')
+  const action = btn?.dataset.action
+  if (action === 'menu') {
+    const r = btn.getBoundingClientRect()
+    api.send('download-menu', id, r.left, r.bottom + 4)
+  } else if (action) api.send('download', action, id)
+  else if (item.dataset.state === 'completed' && !item.classList.contains('missing')) api.send('download', 'open', id)
+})
+$('#downloads-list').addEventListener('contextmenu', (e) => {
+  const item = e.target.closest('.dl-item')
+  if (!item) return
+  e.preventDefault()
+  api.send('download-menu', Number(item.dataset.id), e.clientX, e.clientY)
 })
 
 // ── Appearance ───────────────────────────────────────────────────────────
@@ -1432,16 +1457,17 @@ const PANEL_UI_ACTIONS = {
   customize: () => toggleCustomize(true),
 }
 // Actions you'd likely repeat keep the panel open.
-const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-split-links', 'toggle-email-codes', 'toggle-graphics', 'toggle-fullscreen'])
+const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-auto-groups', 'toggle-split-links', 'toggle-email-codes', 'toggle-graphics'])
 
 function syncMainPanel() {
   const tab = activeTab()
   $('#mp-zoom').textContent = `${tab?.zoom ?? 100}%`
   $('#mp-autohide').classList.toggle('on', Boolean(state.focusMode))
-  $('#mp-fullscreen').classList.toggle('on', Boolean(state.fullscreen))
+  $('#mp-fullscreen').textContent = state.fullscreen ? 'Exit Full Screen' : 'Full Screen'
   $('#mp-favbar').classList.toggle('on', Boolean(state.favoritesBarEnabled))
   $('#mp-protection').classList.toggle('on', Boolean(state.protection?.ads || state.protection?.trackers))
   $('#mp-sleep-tabs').classList.toggle('on', Boolean(state.sleepTabs))
+  $('#mp-auto-groups').classList.toggle('on', Boolean(state.autoGroups))
   $('#mp-split-links').classList.toggle('on', Boolean(state.splitLinks))
   $('#mp-email-codes').classList.toggle('on', Boolean(state.emailCodes))
   $('#mp-graphics').classList.toggle('on', Boolean(state.graphics))
@@ -1459,9 +1485,16 @@ function positionMainPanel() {
   mainPanel.style.maxHeight = `${window.innerHeight - top - 12}px`
 }
 
+/** Shows one page of the ⋯ panel: the main list, More Tools, Settings or Help. */
+function showMainPanelView(name) {
+  for (const view of mainPanel.querySelectorAll('.mp-view')) view.hidden = view.dataset.view !== name
+  mainPanel.scrollTop = 0
+}
+
 function toggleMainPanel(force) {
   const open = force ?? mainPanel.hidden
   if (open) {
+    showMainPanelView('main')
     downloadsPanel.hidden = true
     customizePanel.hidden = true
     shieldPanel.hidden = true
@@ -1473,6 +1506,8 @@ function toggleMainPanel(force) {
 }
 
 mainPanel.addEventListener('click', (e) => {
+  const page = e.target.closest('[data-view]:not(.mp-view)')
+  if (page) return showMainPanelView(page.dataset.view)
   const button = e.target.closest('[data-action]')
   if (!button || button.disabled) return
   const action = button.dataset.action
@@ -1554,10 +1589,10 @@ function renderMenuLevel(items, x, y, level, anchor) {
   panel.style.top = `${top}px`
 }
 
-function openMenu({ items, x, y }) {
+function openMenu({ items, x, y, keepDownloads = false }) {
   const alreadyExpanded = expanded
   menuOpen = true
-  downloadsPanel.hidden = true
+  if (!keepDownloads) downloadsPanel.hidden = true // a download's own menu opens over its list
   customizePanel.hidden = true
   shieldPanel.hidden = true
   syncExpanded()
@@ -1802,6 +1837,9 @@ window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return
   if (dragState?.cancel) return dragState.cancel()
   if (menuOpen) return closeMenus()
+  // Escape on a page of the ⋯ panel goes back to its main list first.
+  const subpage = !mainPanel.hidden && mainPanel.querySelector('.mp-view:not([hidden])')?.dataset.view !== 'main'
+  if (subpage) return showMainPanelView('main')
   if (!mainPanel.hidden) toggleMainPanel(false)
   if (!downloadsPanel.hidden) toggleDownloads(false)
   if (!customizePanel.hidden) toggleCustomize(false)

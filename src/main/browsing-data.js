@@ -22,6 +22,7 @@ async function clearBrowsingData(session, options = {}) {
   const visitedOrigins = history.originsSince(since)
 
   if (options.history) history.clear(since)
+  if (options.history && since === 0) require('./favicons').clear() // which sites' icons are saved says where you've been
 
   if (options.cookies) {
     // Never wipe extensions' own storage (their settings, logins, ...).

@@ -43,6 +43,9 @@
 
         <div id="right-pill" class="pill floating toolbar-actions" style="--order: 2">
           <span id="private-badge" title="This window doesn’t keep history, cookies or site data after it closes">Private</span>
+          <button id="split-btn" class="icon-btn" title="Separate Split View (Ctrl+\)" tabindex="-1" hidden>
+            <svg viewBox="0 0 16 16"><rect x="1.8" y="3.2" width="4.9" height="9.6" rx="1.3" /><rect x="9.3" y="3.2" width="4.9" height="9.6" rx="1.3" /><path d="M8 5.5v5" /></svg>
+          </button>
           <button id="new-tab" class="icon-btn" title="New Tab" tabindex="-1">
             <svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10" /></svg>
           </button>
@@ -173,145 +176,169 @@
 
     <div id="menus"></div>
 
-    <!-- The ⋯ panel -->
+    <!-- The ⋯ panel. Each section is one page of it; More Tools, Settings and Help open in place. -->
     <div id="main-panel" class="panel" hidden>
-      <div class="mp-tiles">
-        <button class="mp-tile" data-action="new-tab">
-          <svg viewBox="0 0 16 16"><rect x="2.5" y="3" width="11" height="10" rx="2.2" /><path d="M8 6v4M6 8h4" /></svg>
-          <span>New Tab</span>
-        </button>
-        <button class="mp-tile" data-action="new-window">
-          <svg viewBox="0 0 16 16"><rect x="2" y="4.5" width="9" height="8.5" rx="2" /><path d="M5 4.5V4a1.5 1.5 0 0 1 1.5-1.5h6A1.5 1.5 0 0 1 14 4v6a1.5 1.5 0 0 1-1.5 1.5H11" /></svg>
-          <span>Window</span>
-        </button>
-        <button class="mp-tile" data-action="find">
-          <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.25" /><path d="M10.2 10.2L13.5 13.5" /></svg>
-          <span>Find</span>
-        </button>
-        <button class="mp-tile" data-action="downloads">
-          <svg viewBox="0 0 16 16"><path d="M8 2.5v8M4.5 7L8 10.5 11.5 7M3.5 13.5h9" /></svg>
-          <span>Downloads</span>
-        </button>
-      </div>
-
-      <div class="mp-row">
-        <span>Zoom</span>
-        <div class="mp-stepper">
-          <button data-action="zoom-out" title="Zoom out (Ctrl+-)"><svg viewBox="0 0 16 16"><path d="M4 8h8" /></svg></button>
-          <button id="mp-zoom" data-action="zoom-reset" title="Reset zoom (Ctrl+0)">100%</button>
-          <button data-action="zoom-in" title="Zoom in (Ctrl+=)"><svg viewBox="0 0 16 16"><path d="M8 4v8M4 8h8" /></svg></button>
+      <section class="mp-view" data-view="main">
+        <div class="mp-tiles">
+          <button class="mp-tile" data-action="new-tab">
+            <svg viewBox="0 0 16 16"><rect x="2.5" y="3" width="11" height="10" rx="2.2" /><path d="M8 6v4M6 8h4" /></svg>
+            <span>New Tab</span>
+          </button>
+          <button class="mp-tile" data-action="new-window">
+            <svg viewBox="0 0 16 16"><rect x="2" y="4.5" width="9" height="8.5" rx="2" /><path d="M5 4.5V4a1.5 1.5 0 0 1 1.5-1.5h6A1.5 1.5 0 0 1 14 4v6a1.5 1.5 0 0 1-1.5 1.5H11" /></svg>
+            <span>Window</span>
+          </button>
+          <button class="mp-tile" data-action="new-private-window" title="New Private Window (Ctrl+Shift+N)">
+            <svg viewBox="0 0 16 16"><path d="M2 8.5c1.8-2.6 3.8-3.9 6-3.9s4.2 1.3 6 3.9c-1.8 1.8-3.8 2.7-6 2.7s-4.2-.9-6-2.7z" /><circle cx="8" cy="8" r="1.7" /></svg>
+            <span>Private</span>
+          </button>
+          <button class="mp-tile" data-action="downloads">
+            <svg viewBox="0 0 16 16"><path d="M8 2.5v8M4.5 7L8 10.5 11.5 7M3.5 13.5h9" /></svg>
+            <span>Downloads</span>
+          </button>
         </div>
-      </div>
-      <div class="mp-row">
-        <span>Auto-hide toolbar</span>
-        <button id="mp-autohide" class="switch" data-action="toggle-autohide" title="Ctrl+Shift+F"></button>
-      </div>
-      <div class="mp-row">
-        <span>Block ads and trackers</span>
-        <button id="mp-protection" class="switch" data-action="toggle-protection" title="Ctrl+Shift+A"></button>
-      </div>
-      <div class="mp-row">
-        <span>Sleep unused tabs</span>
-        <button id="mp-sleep-tabs" class="switch" data-action="toggle-sleep-tabs" title="Tabs you haven’t used for 30 minutes give back their memory, or 5 minutes if Glasswing is using a lot, and reload when you select them"></button>
-      </div>
-      <div class="mp-row">
-        <span>Split view links open on the right</span>
-        <button id="mp-split-links" class="switch" data-action="toggle-split-links" title="In split view, a link on the left opens on the right. Shift+click opens a new tab, and Alt+click stays on the left."></button>
-      </div>
-      <div class="mp-row">
-        <span>Offer to open email for codes</span>
-        <button id="mp-email-codes" class="switch" data-action="toggle-email-codes" title="When a page asks for a code it sent to your email, Glasswing offers to open your email next to it. Which email you use is only saved on this computer."></button>
-      </div>
-      <div class="mp-row">
-        <span>Graphics acceleration</span>
-        <button id="mp-graphics" class="switch" data-action="toggle-graphics" title="Draws pages with the graphics card. Turn it off if your computer crashes while Glasswing is open. Takes a restart."></button>
-      </div>
-      <div class="mp-row">
-        <span>Favorites bar</span>
-        <button id="mp-favbar" class="switch" data-action="toggle-favorites-bar" title="Ctrl+Shift+B"></button>
-      </div>
-      <div class="mp-row">
-        <span>Full screen</span>
-        <button id="mp-fullscreen" class="switch" data-action="toggle-fullscreen" title="F11"></button>
-      </div>
-
-      <div class="mp-sep"></div>
-      <button class="mp-item" data-action="new-private-window">
-        <svg viewBox="0 0 16 16"><path d="M2 8.5c1.8-2.6 3.8-3.9 6-3.9s4.2 1.3 6 3.9c-1.8 1.8-3.8 2.7-6 2.7s-4.2-.9-6-2.7z" /><circle cx="8" cy="8" r="1.7" /></svg>
-        <span>New Private Window</span><kbd>Ctrl+Shift+N</kbd>
-      </button>
-      <button class="mp-item" data-action="picture-in-picture">
-        <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2" /><rect x="8" y="8" width="4" height="3" rx=".7" /></svg>
-        <span>Picture in Picture</span><kbd>Alt+P</kbd>
-      </button>
-      <button class="mp-item" data-action="screenshot">
-        <svg viewBox="0 0 16 16"><path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h1.5l1-1.5h3l1 1.5H12a1.5 1.5 0 0 1 1.5 1.5V12a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 12z" /><circle cx="8" cy="8.5" r="2.3" /></svg>
-        <span>Screenshot</span><kbd>Ctrl+Shift+S</kbd>
-      </button>
-      <button class="mp-item" data-action="toggle-split">
-        <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M8 3v10" /></svg>
-        <span id="mp-split-label">Split View</span><kbd>Ctrl+\</kbd>
-      </button>
-      <button class="mp-item" data-action="clean-up-tabs" title="Offers to close tabs you only looked at for a few seconds, tabs you haven’t used in 3 days, and empty new tabs">
-        <svg viewBox="0 0 16 16"><path d="M9.5 2.5l-6.2 6.2a1.6 1.6 0 0 0 0 2.3l.7.7a1.6 1.6 0 0 0 2.3 0l6.2-6.2zM7 13.5h6.5" /></svg>
-        <span>Clean Up Tabs</span>
-      </button>
-      <button class="mp-item" data-action="customize">
-        <svg viewBox="0 0 16 16"><path d="M8 2.2a5.8 5.8 0 1 0 0 11.6c.9 0 1.3-.6 1.3-1.2 0-.8-.6-1-.6-1.7 0-.6.5-1 1.1-1h1.5a2.6 2.6 0 0 0 2.5-2.6C13.8 4.4 11.2 2.2 8 2.2z" /></svg>
-        <span>Appearance</span>
-      </button>
-      <button class="mp-item" data-action="favorite">
-        <svg viewBox="0 0 16 16"><path d="M8 2.5l1.7 3.5 3.8.5-2.8 2.6.7 3.8L8 11.1l-3.4 1.8.7-3.8-2.8-2.6 3.8-.5z" /></svg>
-        <span id="mp-favorite-label">Add to Favorites</span><kbd>Ctrl+D</kbd>
-      </button>
-      <button class="mp-item" data-action="history">
-        <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.75" /><path d="M8 5v3.2l2 1.3" /></svg>
-        <span>History</span><kbd>Ctrl+H</kbd>
-      </button>
-      <button class="mp-item" data-action="reopen-tab">
-        <svg viewBox="0 0 16 16"><path d="M3 8a5 5 0 1 0 1.6-3.7" /><path d="M3 2.5v3h3" /></svg>
-        <span>Reopen Closed Tab</span><kbd>Ctrl+Shift+T</kbd>
-      </button>
-
-      <div class="mp-sep"></div>
-      <button class="mp-item" data-action="extensions">
-        <svg viewBox="0 0 16 16"><path d="M3 6h2.2a1.3 1.3 0 1 1 2.6 0H10v2.2a1.3 1.3 0 1 1 0 2.6V13H3z" /></svg>
-        <span>Extensions</span>
-      </button>
-      <button class="mp-item" data-action="web-store">
-        <svg viewBox="0 0 16 16"><path d="M3 5.5h10l-.8 7.5H3.8z" /><path d="M5.8 5.5V4.8a2.2 2.2 0 0 1 4.4 0v.7" /></svg>
-        <span>Chrome Web Store</span>
-      </button>
-      <button class="mp-item" data-action="passwords">
-        <svg viewBox="0 0 16 16"><circle cx="5.5" cy="10.5" r="2.75" /><path d="M7.5 8.5L13 3M11 5l1.5 1.5M9.5 6.5L11 8" /></svg>
-        <span>Passwords</span>
-      </button>
-
-      <div class="mp-sep"></div>
-      <button class="mp-item" data-action="print">
-        <svg viewBox="0 0 16 16"><path d="M4.5 6V2.5h7V6M4.5 11.5h-2v-5h11v5h-2" /><rect x="4.5" y="9.5" width="7" height="4" rx=".5" /></svg>
-        <span>Print…</span><kbd>Ctrl+P</kbd>
-      </button>
-      <button class="mp-item" data-action="devtools">
-        <svg viewBox="0 0 16 16"><path d="M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5" /></svg>
-        <span>Developer Tools</span><kbd>F12</kbd>
-      </button>
-      <button class="mp-item" data-action="setup">
-        <svg viewBox="0 0 16 16"><path d="M8 2.5v7M5 6.8l3 3 3-3M3 12.8h10" /></svg>
-        <span>Setup and Import…</span>
-      </button>
-      <button class="mp-item" data-action="check-updates">
-        <svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7" /><path d="M13 2.5v3h-3" /></svg>
-        <span>Check for Updates…</span>
-      </button>
-      <button class="mp-item" data-action="about">
-        <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.75" /><path d="M8 7.2v3.6M8 5.2v.01" /></svg>
-        <span>About Glasswing</span>
-      </button>
-      <button class="mp-item" data-action="quit">
-        <svg viewBox="0 0 16 16"><path d="M8 2.5v5M5 4.2a5 5 0 1 0 6 0" /></svg>
-        <span>Quit</span>
-      </button>
+        <div class="mp-row">
+          <span>Zoom</span>
+          <div class="mp-stepper">
+            <button data-action="zoom-out" title="Zoom out (Ctrl+-)"><svg viewBox="0 0 16 16"><path d="M4 8h8" /></svg></button>
+            <button id="mp-zoom" data-action="zoom-reset" title="Reset zoom (Ctrl+0)">100%</button>
+            <button data-action="zoom-in" title="Zoom in (Ctrl+=)"><svg viewBox="0 0 16 16"><path d="M8 4v8M4 8h8" /></svg></button>
+          </div>
+        </div>
+        <div class="mp-sep"></div>
+        <button class="mp-item" data-action="favorite">
+          <svg viewBox="0 0 16 16"><path d="M8 2.5l1.7 3.5 3.8.5-2.8 2.6.7 3.8L8 11.1l-3.4 1.8.7-3.8-2.8-2.6 3.8-.5z" /></svg>
+          <span id="mp-favorite-label">Add to Favorites</span><kbd>Ctrl+D</kbd>
+        </button>
+        <button class="mp-item" data-action="history">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.75" /><path d="M8 5v3.2l2 1.3" /></svg>
+          <span>History</span><kbd>Ctrl+H</kbd>
+        </button>
+        <button class="mp-item" data-action="find">
+          <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.25" /><path d="M10.2 10.2L13.5 13.5" /></svg>
+          <span>Find on Page</span><kbd>Ctrl+F</kbd>
+        </button>
+        <button class="mp-item" data-action="print">
+          <svg viewBox="0 0 16 16"><path d="M4.5 6V2.5h7V6M4.5 11.5h-2v-5h11v5h-2" /><rect x="4.5" y="9.5" width="7" height="4" rx=".5" /></svg>
+          <span>Print…</span><kbd>Ctrl+P</kbd>
+        </button>
+        <div class="mp-sep"></div>
+        <button class="mp-item" data-action="extensions">
+          <svg viewBox="0 0 16 16"><path d="M3 6h2.2a1.3 1.3 0 1 1 2.6 0H10v2.2a1.3 1.3 0 1 1 0 2.6V13H3z" /></svg>
+          <span>Extensions</span>
+        </button>
+        <button class="mp-item" data-action="passwords">
+          <svg viewBox="0 0 16 16"><circle cx="5.5" cy="10.5" r="2.75" /><path d="M7.5 8.5L13 3M11 5l1.5 1.5M9.5 6.5L11 8" /></svg>
+          <span>Passwords</span>
+        </button>
+        <button class="mp-item" data-action="customize">
+          <svg viewBox="0 0 16 16"><path d="M8 2.2a5.8 5.8 0 1 0 0 11.6c.9 0 1.3-.6 1.3-1.2 0-.8-.6-1-.6-1.7 0-.6.5-1 1.1-1h1.5a2.6 2.6 0 0 0 2.5-2.6C13.8 4.4 11.2 2.2 8 2.2z" /></svg>
+          <span>Appearance</span>
+        </button>
+        <button class="mp-item" data-view="tools">
+          <svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1.2" /><rect x="9" y="2.5" width="4.5" height="4.5" rx="1.2" /><rect x="2.5" y="9" width="4.5" height="4.5" rx="1.2" /><rect x="9" y="9" width="4.5" height="4.5" rx="1.2" /></svg>
+          <span>More Tools</span><svg class="mp-chevron" viewBox="0 0 16 16"><path d="M6 3.5L10.5 8 6 12.5" /></svg>
+        </button>
+        <button class="mp-item" data-view="settings">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M3.6 12.4l1.2-1.2M11.2 4.8l1.2-1.2" /></svg>
+          <span>Settings</span><svg class="mp-chevron" viewBox="0 0 16 16"><path d="M6 3.5L10.5 8 6 12.5" /></svg>
+        </button>
+        <div class="mp-sep"></div>
+        <button class="mp-item" data-view="help">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.75" /><path d="M6.3 6.3a1.8 1.8 0 1 1 2.5 1.6c-.5.3-.8.6-.8 1.2v.4M8 11.3v.01" /></svg>
+          <span>Help</span><svg class="mp-chevron" viewBox="0 0 16 16"><path d="M6 3.5L10.5 8 6 12.5" /></svg>
+        </button>
+        <button class="mp-item" data-action="quit">
+          <svg viewBox="0 0 16 16"><path d="M8 2.5v5M5 4.2a5 5 0 1 0 6 0" /></svg>
+          <span>Quit</span>
+        </button>
+      </section>
+      <section class="mp-view" data-view="tools" hidden>
+        <div class="panel-header mp-header"><button class="mp-back icon-btn small" data-view="main" title="Back"><svg viewBox="0 0 16 16"><path d="M10 3.5L5.5 8l4.5 4.5" /></svg></button><span>More Tools</span></div>
+        <button class="mp-item" data-action="toggle-split">
+          <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M8 3v10" /></svg>
+          <span id="mp-split-label">Split View</span><kbd>Ctrl+\</kbd>
+        </button>
+        <button class="mp-item" data-action="picture-in-picture">
+          <svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="2" /><rect x="8" y="8" width="4" height="3" rx=".7" /></svg>
+          <span>Picture in Picture</span><kbd>Alt+P</kbd>
+        </button>
+        <button class="mp-item" data-action="screenshot">
+          <svg viewBox="0 0 16 16"><path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h1.5l1-1.5h3l1 1.5H12a1.5 1.5 0 0 1 1.5 1.5V12a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 12z" /><circle cx="8" cy="8.5" r="2.3" /></svg>
+          <span>Screenshot</span><kbd>Ctrl+Shift+S</kbd>
+        </button>
+        <button class="mp-item" data-action="toggle-fullscreen">
+          <svg viewBox="0 0 16 16"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" /></svg>
+          <span id="mp-fullscreen">Full Screen</span><kbd>F11</kbd>
+        </button>
+        <div class="mp-sep"></div>
+        <button class="mp-item" data-action="reopen-tab">
+          <svg viewBox="0 0 16 16"><path d="M3 8a5 5 0 1 0 1.6-3.7" /><path d="M3 2.5v3h3" /></svg>
+          <span>Reopen Closed Tab</span><kbd>Ctrl+Shift+T</kbd>
+        </button>
+        <button class="mp-item" data-action="clean-up-tabs" title="Offers to close tabs you only looked at for a few seconds, tabs you haven’t used in 3 days, and empty new tabs">
+          <svg viewBox="0 0 16 16"><path d="M9.5 2.5l-6.2 6.2a1.6 1.6 0 0 0 0 2.3l.7.7a1.6 1.6 0 0 0 2.3 0l6.2-6.2zM7 13.5h6.5" /></svg>
+          <span>Clean Up Tabs</span>
+        </button>
+        <div class="mp-sep"></div>
+        <button class="mp-item" data-action="devtools">
+          <svg viewBox="0 0 16 16"><path d="M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5" /></svg>
+          <span>Developer Tools</span><kbd>F12</kbd>
+        </button>
+      </section>
+      <section class="mp-view" data-view="settings" hidden>
+        <div class="panel-header mp-header"><button class="mp-back icon-btn small" data-view="main" title="Back"><svg viewBox="0 0 16 16"><path d="M10 3.5L5.5 8l4.5 4.5" /></svg></button><span>Settings</span></div>
+        <div class="mp-label">Privacy</div>
+        <div class="mp-row">
+          <span>Block ads and trackers</span>
+          <button id="mp-protection" class="switch" data-action="toggle-protection" title="Ctrl+Shift+A"></button>
+        </div>
+        <div class="mp-row">
+          <span>Offer to open email for codes</span>
+          <button id="mp-email-codes" class="switch" data-action="toggle-email-codes" title="When a page asks for a code it sent to your email, Glasswing offers to open your email next to it. Which email you use is only saved on this computer."></button>
+        </div>
+        <div class="mp-label">Tabs</div>
+        <div class="mp-row">
+          <span>Group tabs by site</span>
+          <button id="mp-auto-groups" class="switch" data-action="toggle-auto-groups" title="Two or more tabs from the same site share a group named after it. Tabs you place yourself stay where you put them."></button>
+        </div>
+        <div class="mp-row">
+          <span>Sleep unused tabs</span>
+          <button id="mp-sleep-tabs" class="switch" data-action="toggle-sleep-tabs" title="Tabs you haven’t used for 30 minutes give back their memory, or 5 minutes if Glasswing is using a lot, and reload when you select them"></button>
+        </div>
+        <div class="mp-row">
+          <span>Split view links open on the right</span>
+          <button id="mp-split-links" class="switch" data-action="toggle-split-links" title="In split view, a link on the left opens on the right. Shift+click opens a new tab, and Alt+click stays on the left."></button>
+        </div>
+        <div class="mp-label">Window</div>
+        <div class="mp-row">
+          <span>Favorites bar</span>
+          <button id="mp-favbar" class="switch" data-action="toggle-favorites-bar" title="Ctrl+Shift+B"></button>
+        </div>
+        <div class="mp-row">
+          <span>Auto-hide toolbar</span>
+          <button id="mp-autohide" class="switch" data-action="toggle-autohide" title="Ctrl+Shift+F"></button>
+        </div>
+        <div class="mp-row">
+          <span>Graphics acceleration</span>
+          <button id="mp-graphics" class="switch" data-action="toggle-graphics" title="Draws pages with the graphics card. Turn it off if your computer crashes while Glasswing is open. Takes a restart."></button>
+        </div>
+      </section>
+      <section class="mp-view" data-view="help" hidden>
+        <div class="panel-header mp-header"><button class="mp-back icon-btn small" data-view="main" title="Back"><svg viewBox="0 0 16 16"><path d="M10 3.5L5.5 8l4.5 4.5" /></svg></button><span>Help</span></div>
+        <button class="mp-item" data-action="setup">
+          <svg viewBox="0 0 16 16"><path d="M8 2.5v7M5 6.8l3 3 3-3M3 12.8h10" /></svg>
+          <span>Setup and Import…</span>
+        </button>
+        <button class="mp-item" data-action="check-updates">
+          <svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.6-3.7" /><path d="M13 2.5v3h-3" /></svg>
+          <span>Check for Updates…</span>
+        </button>
+        <button class="mp-item" data-action="about">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.75" /><path d="M8 7.2v3.6M8 5.2v.01" /></svg>
+          <span>About Glasswing</span>
+        </button>
+      </section>
     </div>
     <div id="prompts"></div>
 

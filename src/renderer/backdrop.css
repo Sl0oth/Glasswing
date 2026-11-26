@@ -111,3 +111,67 @@ body.resizing #divider::after {
 body.resizing {
   cursor: col-resize;
 }
+
+/* An extension's side panel, beside the page. The page inside it sits under the header. */
+#side-panel,
+#side-panel-edge {
+  position: fixed;
+  display: none;
+}
+
+body.has-side-panel #side-panel,
+body.has-side-panel #side-panel-edge {
+  display: block;
+}
+
+#side-panel {
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+#side-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 12px;
+  color: rgba(255, 255, 255, 0.85);
+  font: 600 12.5px/1 system-ui, 'Segoe UI Variable Text', 'Segoe UI', sans-serif;
+}
+
+#side-panel-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#side-panel-close {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+#side-panel-close:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+#side-panel-close svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+#side-panel-edge {
+  cursor: col-resize;
+}

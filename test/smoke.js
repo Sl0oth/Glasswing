@@ -101,6 +101,25 @@ const server = http.createServer((req, res) => {
   res.setHeader('content-type', 'text/html; charset=utf-8')
   const url = new URL(req.url, 'http://x')
   hits.push(url.pathname)
+  if (url.pathname === '/icon.png') {
+    res.setHeader('content-type', 'image/png')
+    return res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64'))
+  }
+  if (url.pathname === '/with-icon') return res.end('<!doctype html><title>Has an icon</title><link rel="icon" href="/icon.png"><p>icon</p>')
+  if (url.pathname === '/slow-file') {
+    // Two megabytes, a little at a time, so a download can be paused partway.
+    res.setHeader('content-type', 'application/octet-stream')
+    res.setHeader('content-length', String(2 * 1024 * 1024))
+    let sent = 0
+    const chunk = Buffer.alloc(32 * 1024)
+    const timer = setInterval(() => {
+      if (res.destroyed || sent >= 2 * 1024 * 1024) return clearInterval(timer), res.end()
+      res.write(chunk)
+      sent += chunk.length
+    }, 60)
+    res.on('close', () => clearInterval(timer))
+    return
+  }
   if (url.pathname.endsWith('.js') || url.pathname.endsWith('.gif')) {
     res.setHeader('content-type', 'text/plain')
     return res.end('')
@@ -2800,6 +2819,286 @@ async function run() {
     electron.app.relaunch = relaunch
     pair.win.destroy()
     await wait(200)
+  }
+
+  console.log('\nDownload options')
+  {
+    const downloads = require(path.join(REPO, 'src/main/downloads.js'))
+    const dlDir = path.join(profile, 'option-downloads')
+    fs.mkdirSync(dlDir, { recursive: true })
+    const realDownloads = app.getPath('downloads')
+    app.setPath('downloads', dlDir)
+    // Nothing here may open Explorer or touch the real Recycle Bin.
+    const real = { openPath: electron.shell.openPath, showItemInFolder: electron.shell.showItemInFolder, trashItem: electron.shell.trashItem }
+    const calls = []
+    electron.shell.openPath = async (p) => (calls.push(['open', p]), '')
+    electron.shell.showItemInFolder = (p) => calls.push(['show', p])
+    electron.shell.trashItem = async (p) => (calls.push(['trash', p]), fs.rmSync(p))
+    const clipboardBefore = await clipboard.readText()
+
+    const pair = BrowserShell.create({ urls: [`${base}/white`], fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(800)
+    const wc = pair.activeTab().webContents
+    const named = (name) => downloads.listDownloads(false).find((d) => d.filename === name)
+    const menuItems = () => ui(pair, `[...document.querySelectorAll('.menu-item')].map((r) => r.textContent.trim())`)
+    const menuClick = (label) => ui(pair, `[...document.querySelectorAll('.menu-item')].find((r) => r.textContent.includes(${JSON.stringify(label)})).click()`)
+    const menuGone = () => until(async () => (await menuItems()).length === 0, 1500)
+    const escape = () => ui(pair, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+
+    wc.downloadURL(`${base}/report.zip`)
+    check('a file downloads', await until(() => named('report.zip')?.state === 'completed', 5000))
+    const done = named('report.zip')
+    pair.sendEvent('toggle-downloads')
+    await wait(300)
+    await ui(pair, `document.querySelector('.dl-item [data-action=menu]').click()`)
+    await until(async () => (await menuItems()).length > 0, 1500)
+    const items = await menuItems()
+    equal('a finished download has the usual options', ['Open', 'Show in Folder', 'Copy Download Link', 'Download Again', 'Delete File', 'Remove from List'].filter((label) => !items.some((t) => t.startsWith(label))), [])
+    check('the list stays open under its menu', await ui(pair, `!document.getElementById('downloads-panel').hidden`))
+    await menuClick('Copy Download Link')
+    await menuGone()
+    equal('copies where it came from', await clipboard.readText(), `${base}/report.zip`)
+    downloads.downloadAction('show', done.id)
+    equal('shows it in its folder', calls.at(-1), ['show', done.path])
+
+    await ui(pair, `document.querySelector('.dl-item').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 900, clientY: 120 }))`)
+    check('right-clicking a download opens the same menu', await until(async () => (await menuItems()).some((t) => t.startsWith('Delete File')), 1500))
+    await escape()
+    await menuGone()
+
+    fs.rmSync(done.path)
+    if (await ui(pair, `document.getElementById('downloads-panel').hidden`)) pair.sendEvent('toggle-downloads')
+    downloads.downloadAction('refresh')
+    check('a file deleted outside Glasswing says so', await until(() => ui(pair, `Boolean(document.querySelector('.dl-item')?.classList.contains('missing') && /Deleted or moved/.test(document.querySelector('.dl-meta').textContent))`), 1500))
+    await ui(pair, `document.querySelector('.dl-item [data-action=menu]').click()`)
+    await until(async () => (await menuItems()).length > 0, 1500)
+    const missingItems = await menuItems()
+    check('and offers to download it again instead of deleting', missingItems.some((t) => t.startsWith('Download Again')) && !missingItems.some((t) => t.startsWith('Delete File')), JSON.stringify(missingItems))
+    await menuClick('Download Again')
+    check('downloading again brings it back', await until(() => named('report.zip')?.state === 'completed' && fs.existsSync(named('report.zip').path), 5000))
+    equal('as one entry, not two', downloads.listDownloads(false).filter((d) => d.url === `${base}/report.zip`).length, 1)
+
+    const again = named('report.zip')
+    downloads.downloadAction('delete', again.id)
+    check('Delete File sends it to the Recycle Bin', await until(() => calls.some(([what, p]) => what === 'trash' && p === again.path), 1500))
+    check('and takes it off the list', await until(() => !named('report.zip'), 1500))
+
+    wc.downloadURL(`${base}/kept.zip`)
+    await until(() => named('kept.zip')?.state === 'completed', 5000)
+    const kept = named('kept.zip')
+    downloads.downloadAction('remove', kept.id)
+    equal('Remove from List keeps the file', [Boolean(named('kept.zip')), fs.existsSync(kept.path)], [false, true])
+
+    wc.downloadURL(`${base}/slow-file`)
+    check('a slow download starts', await until(() => named('slow-file')?.state === 'progressing' && named('slow-file').received > 0, 5000))
+    const slow = named('slow-file')
+    check('it has a pause button', await until(() => ui(pair, `Boolean(document.querySelector('.dl-item[data-state=progressing] [data-action=pause]'))`), 1500))
+    downloads.downloadAction('pause', slow.id)
+    check('pausing pauses it', await until(() => named('slow-file')?.state === 'paused', 2000))
+    await wait(300)
+    const pausedAt = named('slow-file').received
+    await wait(600)
+    equal('and it stops getting more', named('slow-file').received, pausedAt)
+    check('then it offers to resume', await until(() => ui(pair, `Boolean(document.querySelector('.dl-item[data-state=paused] [data-action=resume]'))`), 1500))
+    downloads.downloadAction('resume', slow.id)
+    check('resuming carries on', await until(() => named('slow-file')?.state === 'progressing' && named('slow-file').received > pausedAt, 3000))
+    downloads.downloadAction('cancel', slow.id)
+    check('cancelling stops it', await until(() => named('slow-file')?.state === 'cancelled', 2000))
+    check('a cancelled download offers to retry', await until(() => ui(pair, `Boolean(document.querySelector('.dl-item[data-state=cancelled] [data-action=retry]'))`), 1500))
+    downloads.downloadAction('retry', slow.id)
+    check('retrying starts it again', await until(() => named('slow-file')?.state === 'progressing' && named('slow-file').id !== slow.id, 5000))
+    downloads.downloadAction('cancel', named('slow-file').id)
+    await until(() => named('slow-file')?.state === 'cancelled', 2000)
+
+    downloads.downloadAction('clear')
+    Object.assign(electron.shell, real)
+    await clipboard.writeText(clipboardBefore)
+    app.setPath('downloads', realDownloads)
+    pair.win.destroy()
+    await wait(200)
+  }
+
+  console.log('\nLeaving split view')
+  {
+    const pair = BrowserShell.create({ urls: [`${base}/white`, `${base}/white?2`], fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(800)
+    const [leftId, rightId] = pair.order
+    const button = () => ui(pair, `!document.getElementById('split-btn').hidden`)
+    const menuItems = () => ui(pair, `[...document.querySelectorAll('.menu-item')].map((r) => r.textContent.trim())`)
+    const menuClick = (label) => ui(pair, `[...document.querySelectorAll('.menu-item')].find((r) => r.textContent.includes(${JSON.stringify(label)})).click()`)
+    equal('no separate button outside split view', await button(), false)
+    pair.splitWith(rightId, leftId, 'right')
+    check('in split view the toolbar has a button to leave it', await until(button, 1500))
+    await ui(pair, `document.getElementById('split-btn').click()`)
+    check('pressing it separates them', await until(() => !pair.activeTab().split, 1500))
+    check('and the button goes', await until(async () => !(await button()), 1500))
+
+    pair.splitWith(rightId, leftId, 'right')
+    await wait(300)
+    await pair.win.webContents.executeJavaScript(`document.getElementById('divider').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 640, clientY: 400 }))`)
+    check('right-clicking the gap between them has a menu', await until(async () => (await menuItems()).some((t) => t.startsWith('Separate Split View')), 1500))
+    const before = pair.activeTab().split.left
+    await menuClick('Swap Sides')
+    check('which can swap them', await until(() => pair.activeTab().split?.left !== before, 1500))
+    await until(async () => (await menuItems()).length === 0, 1500)
+    menus.pageContextMenu(pair.activeTab(), { x: 20, y: 20, misspelledWord: '', dictionarySuggestions: [], linkURL: '', srcURL: '', mediaType: 'none', isEditable: false, selectionText: '', editFlags: {} })
+    check('a page in split view can be separated from its own menu', await until(async () => (await menuItems()).some((t) => t.startsWith('Separate Split View')), 1500))
+    await menuClick('Separate Split View')
+    check('and that separates them', await until(() => !pair.activeTab().split, 1500))
+    pair.win.destroy()
+    await wait(200)
+  }
+
+  console.log('\nSaved site icons')
+  {
+    const siteIcons = require(path.join(REPO, 'src/main/favicons.js'))
+    const iconPage = `${base}/with-icon`
+    const pair = BrowserShell.create({ urls: [iconPage], fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    check('a site\'s icon is saved', await until(() => siteIcons.cachedFor(iconPage)?.startsWith('data:image/png;base64,'), 5000))
+    pair.win.destroy()
+    await wait(200)
+    siteIcons.flush()
+    check('to disk', fs.existsSync(path.join(profile, 'favicons.json')))
+
+    // Restored the way a session is: only the tab on screen loads.
+    const restored = BrowserShell.create({ tabs: [{ url: iconPage, title: 'Has an icon' }, { url: `${base}/white`, title: 'White' }], activeIndex: 1, fullscreen: false })
+    restored.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(restored.win)
+    await wait(1000)
+    const unloaded = restored.tabs.get(restored.order[0])
+    equal('(that tab isn\'t loaded)', Boolean(unloaded.pendingUrl), true)
+    check('an unloaded tab still shows its icon', await until(() => ui(restored, `document.querySelector('.tab .tab-icon img')?.src.startsWith('data:image/png') ?? false`), 2000))
+    equal('from what was saved', unloaded.state().favicon, siteIcons.cachedFor(iconPage))
+    restored.win.destroy()
+    await wait(200)
+
+    await siteIcons.remember('https://private.example/', 'data:image/png;base64,AAAA', null, { isPrivate: true })
+    equal('private windows\' icons aren\'t saved', siteIcons.cachedFor('https://private.example/'), null)
+    await require(path.join(REPO, 'src/main/browsing-data.js')).clearBrowsingData(electron.session.defaultSession, { range: 'all', history: true })
+    equal('clearing all history forgets them', [siteIcons.cachedFor(iconPage), fs.existsSync(path.join(profile, 'favicons.json'))], [null, false])
+  }
+
+  console.log('\nGroup tabs by site')
+  {
+    const autoGroups = require(path.join(REPO, 'src/main/auto-groups.js'))
+    const store = require(path.join(REPO, 'src/main/store.js'))
+    // Unloaded tabs, so nothing reaches these made-up sites.
+    const urls = ['https://news.example.com/a', 'https://example.com/b', 'https://other.test/c', `${base}/white`]
+    const pair = BrowserShell.create({ tabs: urls.map((url) => ({ url, title: url })), activeIndex: 3, fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(800)
+    const byUrl = (url) => [...pair.tabs.values()].find((tab) => tab.url === url)
+    const groupOf = (url) => pair.groups.get(byUrl(url)?.groupId) ?? null
+    equal('it\'s off to start with', [autoGroups.enabled(), pair.groups.size], [false, 0])
+    check('the ⋯ panel has the switch', await ui(pair, `Boolean(document.getElementById('mp-auto-groups'))`))
+
+    menus.runAction(pair, 'toggle-auto-groups')
+    equal('the switch turns it on', [autoGroups.enabled(), pair.getState().autoGroups], [true, true])
+    const example = groupOf(urls[0])
+    equal('tabs from one site share a group named after it', [example?.name, groupOf(urls[1])?.id === example?.id], ['Example', true])
+    equal('a site with one tab isn\'t grouped', groupOf(urls[2]), null)
+
+    pair.createTab({ url: 'https://other.test/d', title: 'd', lazy: true, active: false })
+    check('a second tab from a site starts its group', await until(() => groupOf(urls[2])?.name === 'Other', 1500))
+    check('and they sit together', Math.abs(pair.order.indexOf(byUrl(urls[2]).id) - pair.order.indexOf(byUrl('https://other.test/d').id)) === 1)
+
+    pair.setTabGroup(byUrl(urls[1]), null)
+    autoGroups.arrange(pair)
+    equal('a tab you take out stays out', groupOf(urls[1]), null)
+    check('which leaves too few for a group', await until(() => groupOf(urls[0]) === null, 1500))
+
+    pair.closeTab(byUrl('https://other.test/d').id)
+    check('closing down to one tab ends the group', await until(() => groupOf(urls[2]) === null, 1500))
+
+    pair.createTab({ url: 'https://other.test/e', title: 'e', lazy: true, active: false })
+    await until(() => groupOf(urls[2]) !== null, 1500)
+    equal('it\'s saved as a site group', pair.serialize().groups.map(({ auto, site, name }) => [auto, site, name]), [[true, 'other.test', 'Other']])
+    groupOf(urls[2]).auto = false // what renaming or recoloring it does
+    pair.createTab({ url: 'https://news.example.com/f', title: 'f', lazy: true, active: false })
+    pair.createTab({ url: 'https://example.com/g', title: 'g', lazy: true, active: false })
+    check('new tabs from a site group up', await until(() => groupOf('https://example.com/g') !== null, 1500))
+    menus.runAction(pair, 'toggle-auto-groups')
+    equal('turning it off ends the groups it made', groupOf('https://example.com/g'), null)
+    equal('but not one you made your own', groupOf(urls[2])?.name, 'Other')
+    menus.tabContextMenu(pair, pair.order[0], 300, 30)
+    check('the tab menu has the switch too', await until(() => ui(pair, `[...document.querySelectorAll('.menu-item')].some((r) => r.textContent.includes('Group Tabs by Site'))`), 1500))
+    await ui(pair, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+    store.set('autoGroups', undefined)
+    pair.win.destroy()
+    await wait(200)
+  }
+
+  console.log('\nExtension side panels')
+  {
+    const store = require(path.join(REPO, 'src/main/store.js'))
+    const sidePanel = require(path.join(REPO, 'src/main/side-panel.js'))
+    const ses = electron.session.defaultSession
+    const ext = await ses.extensions.loadExtension(path.join(__dirname, 'fixtures', 'side-panel-extension'))
+    check('an extension\'s worker can say its button opens its panel', await until(() => (store.get('sidePanelBehavior') ?? {})[ext.id] === true, 6000), JSON.stringify(store.get('sidePanelBehavior')))
+    const pair = BrowserShell.create({ urls: [`${base}/white`], fullscreen: false })
+    pair.win.setBounds({ x: -6000, y: -6000, width: 1280, height: 800 })
+    showWithoutFocus.call(pair.win)
+    await wait(1000)
+    const tab = pair.activeTab()
+    const pageWidth = () => tab.view.getBounds().width
+    const widthBefore = pageWidth()
+    const clickButton = () => ui(pair, `[...document.getElementById('extension-actions').shadowRoot.querySelectorAll('.action')].find((b) => b.title?.includes('Side Panel Test') || b.getAttribute('aria-label')?.includes('Side Panel Test') || true)?.click()`)
+    check('its button is in the toolbar', await until(() => ui(pair, `(document.getElementById('extension-actions').shadowRoot?.querySelectorAll('.action').length ?? 0) > 0`), 3000))
+    await clickButton()
+    check('clicking it opens the panel', await until(() => pair.sidePanel?.extensionId === ext.id, 3000))
+    const panelWc = pair.sidePanel.view.webContents
+    check('showing the extension\'s page', await until(() => panelWc.getURL() === `chrome-extension://${ext.id}/panel.html` && !panelWc.isLoading(), 3000), panelWc.getURL())
+    check('beside the page, which makes room', await until(() => pageWidth() < widthBefore - 250, 1500), `${widthBefore} → ${pageWidth()}`)
+    const panelBounds = pair.sidePanel.view.getBounds()
+    check('on the right', panelBounds.x > tab.view.getBounds().x + tab.view.getBounds().width, JSON.stringify(panelBounds))
+    equal('the header has its name', await pair.win.webContents.executeJavaScript(`document.body.classList.contains('has-side-panel') && document.getElementById('side-panel-title').textContent`), 'Side Panel Test')
+    equal('the panel can use chrome.sidePanel', await panelWc.executeJavaScript(`Promise.all([chrome.sidePanel.getPanelBehavior(), chrome.sidePanel.getOptions({})]).then(([b, o]) => [b.openPanelOnActionClick, o.path, o.enabled])`), [true, 'panel.html', true])
+    equal('websites don\'t get it', await tab.webContents.executeJavaScript(`typeof globalThis.chrome?.sidePanel`), 'undefined')
+
+    sidePanel.resizeTo(pair, 700)
+    check('dragging its edge resizes it', await until(() => Math.abs(pair.sidePanel.view.getBounds().x - 704) <= 8, 1500), JSON.stringify(pair.sidePanel.view.getBounds()))
+    check('and the page fits beside it', tab.view.getBounds().x + tab.view.getBounds().width <= pair.sidePanel.view.getBounds().x)
+    await clickButton()
+    check('clicking the button again closes it', await until(() => !pair.sidePanel, 1500))
+    check('and the page gets its room back', await until(() => pageWidth() === widthBefore, 1500), `${pageWidth()} vs ${widthBefore}`)
+
+    await sidePanel.call(ext.id, 'open', { tabId: tab.id })
+    check('an extension can open it itself', await until(() => pair.sidePanel?.extensionId === ext.id, 1500))
+    await pair.win.webContents.executeJavaScript(`document.getElementById('side-panel-close').click()`)
+    check('its close button closes it', await until(() => !pair.sidePanel, 1500))
+
+    await sidePanel.call(ext.id, 'open', { tabId: tab.id })
+    await until(() => pair.sidePanel, 1500)
+    await sidePanel.call(ext.id, 'setOptions', { tabId: tab.id, enabled: false })
+    check('turning it off for a tab closes it there', await until(() => !pair.sidePanel, 1500))
+    let refused = false
+    await sidePanel.call(ext.id, 'open', { tabId: tab.id }).catch(() => (refused = true))
+    equal('and it won\'t open there', [refused, Boolean(pair.sidePanel)], [true, false])
+    const other = pair.createTab({ url: `${base}/white?other` })
+    await wait(300)
+    await sidePanel.call(ext.id, 'open', { tabId: other.id })
+    check('it still opens on other tabs', await until(() => pair.sidePanel?.extensionId === ext.id, 1500))
+    pair.selectTab(tab.id)
+    check('and closes on going back to the tab it\'s off for', await until(() => !pair.sidePanel, 1500))
+
+    let rejected = false
+    await sidePanel.call('a'.repeat(32), 'open', {}).catch(() => (rejected = true))
+    check('an extension that isn\'t installed gets nothing', rejected)
+
+    pair.win.destroy()
+    await wait(200)
+    sidePanel.forget(ext.id)
+    ses.extensions.removeExtension(ext.id)
+    store.set('sidePanelWidth', undefined)
+    equal('removing it forgets its settings', (store.get('sidePanelBehavior') ?? {})[ext.id], undefined)
+    store.set('sidePanelBehavior', undefined)
   }
 
   console.log('\nDevices with their own certificate')

@@ -73,6 +73,10 @@ just says it couldn't reach the server.
   `electron-chrome-web-store` makes "Add to Chrome" on chromewebstore.google.com install into
   Glasswing and keeps the installed extensions updated. The browser also reports a plain Chrome
   user agent.
+- **Extension side panels** (`src/main/side-panel.js`): Glasswing adds Chrome's `chrome.sidePanel`, which the
+  extensions library doesn't have. An extension's panel opens on the right of the window from its toolbar button, with
+  its name and a close button above it, and its left edge resizes it. Extensions can open, close and set up their
+  panel per tab as in Chrome. One with a panel and no popup gets its panel from its button even if it never asked.
 - **Search**: DuckDuckGo, Google, Bing or Brave Search, for queries and suggestions (`src/main/search.js`).
   Favicons come from DuckDuckGo's icon service.
 - **Setup window** (`src/main/setup.js`): opens once on first launch, before any browser window, and from
@@ -100,6 +104,8 @@ just says it couldn't reach the server.
 - **Split view**: two tabs side by side. The tab you're on stays, and the one you dragged joins it.
   - Also from Ctrl+\, the ⋯ panel, or by right-clicking a tab.
   - Click a side to focus it, and drag the gap between them to resize. Double-click the gap to even it out.
+  - To leave it, press the split button that shows in the toolbar, right-click the gap (Separate, Swap Sides,
+    Even Out), right-click either page, or press Ctrl+\ again.
   - The two show as joined in the tab strip, and split views are restored after a restart.
   - A link clicked on the left opens on the right, so the left can stay put as a list. Links on the right stay on the
     right. Shift+click opens a new tab, Ctrl+click a tab behind this one, and Alt+click stays on the left. Links that act
@@ -133,8 +139,13 @@ just says it couldn't reach the server.
   result of a form, or from sites you've let send notifications stay awake. There's a switch in the ⋯ panel.
 - **Tab groups**: right-click a tab → Add to New Group. Click a group's label to hide its tabs or show them, right-click
   it to rename, recolor, ungroup or close it, and drag tabs in and out. Groups are saved with your session.
-- **Clean Up Tabs** (⋯ menu): offers to close tabs you only looked at for up to 15 seconds and haven't been back to
-  for 15 minutes, tabs you haven't used in 3 days, and empty new tabs. You can untick any of them. Tabs in a group, tabs
+- **Group tabs by site** (switch in the ⋯ panel and the tab menu): two or more tabs from one site share a group named
+  after it. A tab you put in a group or take out of one stays where you put it. Turning it off ends the groups it made,
+  except ones you've renamed or recolored, which are yours.
+- **Site icons**: each site's icon is saved in the profile (`favicons.json`), so tabs that aren't loaded, restored at
+  startup or asleep, still show what they are. Private windows' icons aren't saved, and clearing all history clears them.
+- **Clean Up Tabs** (⋯ menu, or right-click a tab): offers to close tabs you only looked at for up to 15 seconds and haven't been back to
+  for 15 minutes, tabs you haven't used in 3 days, and empty new tabs. You can untick any of them. Tabs in a group you made, tabs
   on screen, and tabs playing something or with text typed in are never listed.
 - **Email codes**: when a page asks for a code it sent to your email, Glasswing offers to open your email next to it.
   It asks which email you use the first time, and only saves that on your computer. The page's text stays in the page,
@@ -155,6 +166,9 @@ just says it couldn't reach the server.
 - **Encrypted DNS**: site names are looked up through Quad9 or Cloudflare over an encrypted connection, so your
   network can't read them from the lookups. Normal lookups are the fallback. There's a switch on the Protection page.
 - **Picture in Picture**: Alt+P, the ⋯ panel, or right-click a video pops it into a small window that stays on top.
+- **Downloads**: they go straight to the Downloads folder. Each one in the list has a ⋯ menu, also on right-click: Open,
+  Show in Folder, Copy Download Link, Download Again, Delete File (to the Recycle Bin) and Remove from List. Downloads
+  in progress can be paused, resumed or cancelled, failed ones retried, and a file you've moved or deleted says so.
 - **Screenshots**: Ctrl+Shift+S or the ⋯ panel saves what's on screen in the page to Downloads and copies it.
 - **Problems**: errors are written to `glasswing.log` in the profile folder rather than shown as
   dialogs. A page that crashes offers a Reload card, and a background tab reloads when you select it.

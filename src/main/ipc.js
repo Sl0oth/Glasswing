@@ -20,6 +20,7 @@ const commands = {
   'move-tab': (shell, id, index, groupId) => shell.moveTab(num(id), num(index), groupId === undefined ? undefined : groupId === null ? null : num(groupId)),
   'group-toggle': (shell, id) => shell.toggleGroup(num(id)),
   'group-menu': (shell, id, x, y) => menus.groupContextMenu(shell, num(id), num(x) || 0, num(y) || 0),
+  'split-menu': (shell, x, y) => menus.splitMenu(shell, num(x) || 0, num(y) || 0),
   'tab-menu': (shell, id, x, y) => menus.tabContextMenu(shell, num(id), num(x) || 0, num(y) || 0),
   'menu-select': (shell, id) => menus.selectMenuItem(shell, id == null ? null : num(id)),
   'toggle-mute': (shell, id) => {
@@ -73,6 +74,7 @@ const commands = {
   find: (shell, text, opts) => shell.find(String(text ?? ''), opts ?? {}),
 
   download: (_shell, action, id) => downloadAction(String(action), num(id)),
+  'download-menu': (shell, id, x, y) => require('./downloads').downloadMenu(shell, num(id), num(x) || 0, num(y) || 0),
 
   'prompt-response': (shell, id, button, checked, values) => prompts.respond(shell, num(id), button, checked, values),
 
@@ -144,11 +146,19 @@ function setupIpc() {
     if (tab) require('./email-code').offer(tab).catch((err) => console.error('Could not offer to open email:', err))
   })
 
-  ipcMain.on('backdrop:divider', (event, action, x) => {
+  ipcMain.on('backdrop:side-panel', (event, action, x) => {
+    const shell = [...BrowserShell.all].find((s) => s.win.webContents === event.sender)
+    if (!shell) return
+    if (action === 'close') require('./side-panel').close(shell)
+    else if (action === 'resize') require('./side-panel').resizeTo(shell, num(x))
+  })
+
+  ipcMain.on('backdrop:divider', (event, action, x, y) => {
     const shell = [...BrowserShell.all].find((s) => s.win.webContents === event.sender)
     if (!shell) return
     if (action === 'drag') shell.dragSplitDivider(num(x))
     else if (action === 'reset') shell.resetSplitDivider()
+    else if (action === 'menu') menus.splitMenu(shell, num(x) || 0, num(y) || 0)
   })
 
   ipcMain.on('ui:command', (event, name, ...args) => {

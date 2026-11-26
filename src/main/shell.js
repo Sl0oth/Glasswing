@@ -235,6 +235,7 @@ class BrowserShell {
       this.selectTab(created[Math.min(activeIndex, created.length - 1)] ?? created[0])
       this.syncViews() // the active tab may already have been shown, before its split was restored
     }
+    require('./auto-groups').schedule(this)
 
     let shown = false
     const show = () => {
@@ -311,6 +312,7 @@ class BrowserShell {
     })
     win.on('closed', () => {
       this.closed = true
+      require('./side-panel').close(this)
       clearInterval(this.pointerTimer)
       clearTimeout(this.concealTimer)
       require('./prompts').cancelAll(this)
@@ -358,6 +360,7 @@ class BrowserShell {
     }
     this.order.splice(at, 0, tab.id)
     this.keepTogether()
+    require('./auto-groups').schedule(this) // a tab made unloaded never navigates, so it's sorted from here
 
     // Extensions can read what's in a tab, so they don't get told about private ones.
     if (!this.private) extensions.addTab(tab.webContents, this.win, this.activeTab()?.webContents)
@@ -382,6 +385,7 @@ class BrowserShell {
     this.layout()
 
     if (!this.private) extensions.tabSelected(tab.webContents)
+    require('./side-panel').tabChanged(this)
 
     if (typeAddress) this.focusAddressBarOver(tab)
     else if (this.win.isFocused()) tab.webContents.focus()
@@ -457,6 +461,7 @@ class BrowserShell {
   /** Takes a tab out of this window, without closing its page. Another tab takes its place. */
   releaseTab(tab) {
     const id = tab.id
+    require('./auto-groups').schedule(this) // its site may be down to one tab here
     if (tab.stopSlide) {
       tab.stopSlide() // it may have been on its way out of view
       tab.stopSlide = null
@@ -507,6 +512,7 @@ class BrowserShell {
     const at = Number.isFinite(index) ? Math.max(0, Math.min(index, this.order.length)) : this.order.length
     this.order.splice(at, 0, tab.id)
     this.keepTogether()
+    require('./auto-groups').schedule(this)
     extensions.tabMoved(tab.webContents, this.win)
 
     this.selectTab(tab.id)
@@ -569,13 +575,16 @@ class BrowserShell {
 
   // ── Tab groups ────────────────────────────────────────────────────────
 
-  addGroup({ name, color, collapsed } = {}) {
+  addGroup({ name, color, collapsed, auto, site } = {}) {
     const used = [...this.groups.values()].map((g) => g.color)
     const group = {
       id: nextGroupId++,
       name: String(name ?? '').trim().slice(0, 60),
       color: GROUP_COLORS.includes(color) ? color : (GROUP_COLORS.find((c) => !used.includes(c)) ?? GROUP_COLORS[0]),
       collapsed: Boolean(collapsed),
+      // Made by grouping tabs by site (see auto-groups.js), and still as it made it.
+      auto: Boolean(auto),
+      site: typeof site === 'string' ? site : null,
     }
     this.groups.set(group.id, group)
     return group
@@ -585,8 +594,12 @@ class BrowserShell {
   setTabGroup(tab, groupId) {
     if (!tab) return
     tab.groupId = groupId
+    tab.groupedByHand = true // grouping by site leaves it where you put it
     const partner = this.partnerOf(tab)
-    if (partner) partner.groupId = groupId
+    if (partner) {
+      partner.groupId = groupId
+      partner.groupedByHand = true
+    }
     this.keepTogether()
     this.scheduleState()
   }
@@ -614,8 +627,13 @@ class BrowserShell {
     this.scheduleState()
   }
 
-  ungroup(id) {
-    for (const tab of this.tabs.values()) if (tab.groupId === id) tab.groupId = null
+  /** `byHand`: you did it, so grouping by site doesn't put these tabs straight back. */
+  ungroup(id, { byHand = true } = {}) {
+    for (const tab of this.tabs.values()) {
+      if (tab.groupId !== id) continue
+      tab.groupId = null
+      if (byHand) tab.groupedByHand = true
+    }
     this.dropEmptyGroups()
     this.scheduleState()
   }
@@ -902,6 +920,7 @@ class BrowserShell {
       for (const other of this.shownTabs) {
         if (other !== tab) other.place({ x: 0, y: 0, width: 0, height: 0 })
       }
+      this.sidePanel?.view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
       // Prompts and right-click menus still have to appear over a full-screen video.
       this.ui.setBounds({ x: 0, y: 0, width, height: this.uiExpanded ? height : 0 })
       return
@@ -921,14 +940,16 @@ class BrowserShell {
       width: Math.max(0, width - gap * 2),
       height: Math.max(0, height - top - gap),
     }
+    // An extension's side panel takes the right of the page area.
+    const sidePanel = require('./side-panel').place(this, card, radius)
     const panes = this.visibleTabs()
     if (panes.length === 2) {
-      this.layoutSplit(panes, card, hidden)
+      this.layoutSplit(panes, card, hidden, sidePanel)
     } else {
       this.splitArea = null
       tab?.view.setBorderRadius(radius)
       tab?.place(card)
-      this.sendBackdrop('layout', { card, radius, split: null })
+      this.sendBackdrop('layout', { card, radius, split: null, sidePanel })
     }
 
     let uiHeight = chrome
@@ -941,7 +962,7 @@ class BrowserShell {
     this.ui.setBounds({ x: 0, y: 0, width, height: uiHeight })
   }
 
-  layoutSplit([left, right], card, hidden) {
+  layoutSplit([left, right], card, hidden, sidePanel = null) {
     const margin = hidden ? SPLIT_MARGIN : 0
     const area = {
       x: card.x + margin,
@@ -972,6 +993,7 @@ class BrowserShell {
         active: this.activeId === left.id ? 'left' : 'right',
         divider: { x: leftRect.x + leftRect.width, y: area.y, width: SPLIT_GAP, height: area.height },
       },
+      sidePanel,
     })
   }
 
@@ -1227,6 +1249,7 @@ class BrowserShell {
     return {
       private: this.private,
       sleepTabs: sleepingTabs.enabled(),
+      autoGroups: require('./auto-groups').enabled(),
       splitLinks: store.get('splitLinks') !== false,
       emailCodes: store.get('emailCodes') !== false,
       graphics: store.get('graphicsAcceleration') !== false,
@@ -1281,7 +1304,7 @@ class BrowserShell {
         const group = [...this.groups.keys()].indexOf(tab.groupId)
         return { url: tab.url || NEWTAB_URL, title: tab.title, lastSeen: tab.lastSeen, seenMs, ...(group >= 0 ? { group } : {}) }
       }),
-      groups: [...this.groups.values()].map(({ name, color, collapsed }) => ({ name, color, collapsed })),
+      groups: [...this.groups.values()].map(({ name, color, collapsed, auto, site }) => ({ name, color, collapsed, auto, site })),
       splits: this.order
         .filter((id) => this.tabs.get(id).split?.left === id)
         .map((id) => {

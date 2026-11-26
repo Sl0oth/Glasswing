@@ -179,6 +179,7 @@ async function handleApi(request, url, isPrivate) {
       } catch {
         if (ses.extensions.getExtension(id)) ses.extensions.removeExtension(id)
       }
+      require('./side-panel').forget(id)
       return json({ ok: true })
     }
   }

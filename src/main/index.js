@@ -120,7 +120,9 @@ async function start() {
   setupPasswords()
   setupGoogleSignIn(ses)
   setupIpc()
+  require('./side-panel').setup(ses) // before the extensions library, whose preload freezes `chrome`
   extensions.init(ses)
+  require('./side-panel').wrapActions(extensions.get())
   ses.registerPreloadScript({
     id: 'glasswing-autofill',
     type: 'frame',
@@ -219,8 +221,12 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', (event) => {
     if (BrowserShell.all.size > 0) BrowserShell.saveSession()
     BrowserShell.quitting = true
-    if (!flushed && require('./history').getSettings().clearOnExit) require('./history').clear(0)
+    if (!flushed && require('./history').getSettings().clearOnExit) {
+      require('./history').clear(0)
+      require('./favicons').clear()
+    }
     store.flush()
+    require('./favicons').flush()
     if (flushed || !app.isReady()) return
     // Make sure cookies and site storage are on disk before exiting.
     event.preventDefault()

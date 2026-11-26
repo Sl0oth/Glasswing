@@ -5,6 +5,7 @@ const history = require('./history')
 const blocker = require('./blocker')
 const privacy = require('./privacy')
 const certificates = require('./certificates')
+const siteIcons = require('./favicons')
 
 const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5]
 const PAGE_BACKGROUND = '#ffffff'
@@ -501,6 +502,7 @@ class Tab {
     })
     wc.on('page-favicon-updated', (_e, favicons) => {
       this.favicon = favicons?.[0] ?? null
+      if (this.favicon) siteIcons.remember(wc.getURL(), this.favicon, wc.session, { isPrivate: this.shell.private }).then(changed)
       changed()
     })
     wc.on('did-start-loading', () => {
@@ -514,6 +516,7 @@ class Tab {
     })
     wc.on('did-navigate', (_e, url) => {
       privacy.loaded(url)
+      require('./auto-groups').schedule(this.shell)
       this.favicon = null
       this.applyBackground(url)
       recordVisit(url)
@@ -605,7 +608,8 @@ class Tab {
       id: this.id,
       title: this.title,
       url: this.url,
-      favicon: this.favicon,
+      // A page that isn't loaded shows its site's saved icon, so you can still tell what it is.
+      favicon: (!this.sleeping && !this.pendingUrl && this.favicon) || siteIcons.cachedFor(this.url) || this.favicon,
       loading: this.loading,
       canGoBack: alive && wc.navigationHistory.canGoBack(),
       canGoForward: alive && wc.navigationHistory.canGoForward(),

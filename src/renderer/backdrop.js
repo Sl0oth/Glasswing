@@ -34,6 +34,47 @@ divider.addEventListener('mousedown', (e) => {
   window.addEventListener('mouseup', onUp)
 })
 divider.addEventListener('dblclick', () => window.backdrop.divider('reset'))
+divider.addEventListener('contextmenu', (e) => {
+  e.preventDefault()
+  window.backdrop.divider('menu', e.clientX, e.clientY)
+})
+
+// An extension's side panel: its frame and header are drawn here, behind its page. Its left edge resizes it.
+const sidePanel = document.getElementById('side-panel')
+const sidePanelEdge = document.getElementById('side-panel-edge')
+document.getElementById('side-panel-close').addEventListener('click', () => window.backdrop.sidePanel('close'))
+sidePanelEdge.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return
+  e.preventDefault()
+  let queued = null
+  const onMove = (ev) => {
+    if (ev.buttons === 0) return onUp()
+    if (queued == null) {
+      requestAnimationFrame(() => {
+        window.backdrop.sidePanel('resize', queued)
+        queued = null
+      })
+    }
+    queued = ev.clientX
+  }
+  const onUp = () => {
+    document.body.classList.remove('resizing')
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+  document.body.classList.add('resizing')
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+})
+
+function placeSidePanel(info) {
+  document.body.classList.toggle('has-side-panel', Boolean(info))
+  if (!info) return
+  place(sidePanel, info.frame)
+  place(sidePanelEdge, info.edge)
+  document.getElementById('side-panel-header').style.height = `${info.header}px`
+  document.getElementById('side-panel-title').textContent = info.title
+}
 
 window.backdrop.on((type, payload) => {
   if (type === 'appearance') {
@@ -46,8 +87,9 @@ window.backdrop.on((type, payload) => {
     root.setProperty('--accent', payload.accent)
     setTimeout(() => document.body.classList.add('ready'), 300)
   } else if (type === 'layout') {
-    const { card: r, radius, split } = payload
+    const { card: r, radius, split, sidePanel: panelInfo } = payload
     place(card, r)
+    placeSidePanel(panelInfo)
     root.setProperty('--radius', `${radius}px`)
     document.body.classList.toggle('split', Boolean(split))
     if (split) {

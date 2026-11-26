@@ -17,7 +17,7 @@ const truncate = (s, n = 32) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
  * Sends a menu to the UI to draw at (x, y) in window coordinates. Click handlers stay here and
  * run when the UI reports a selection (`selectMenuItem`).
  */
-function showMenu(shell, template, { x, y, fromPage = false }) {
+function showMenu(shell, template, { x, y, fromPage = false, keepDownloads = false }) {
   const handlers = new Map()
   let nextId = 0
   const convert = (items) =>
@@ -39,7 +39,7 @@ function showMenu(shell, template, { x, y, fromPage = false }) {
   while (items.at(-1)?.type === 'separator') items.pop()
   shell.menu = { handlers, fromPage }
   shell.ui.webContents.focus()
-  shell.sendEvent('menu', { items, x: Math.round(x), y: Math.round(y) })
+  shell.sendEvent('menu', { items, x: Math.round(x), y: Math.round(y), keepDownloads })
 }
 
 function selectMenuItem(shell, id) {
@@ -145,6 +145,13 @@ function pageContextMenu(tab, params) {
       items.push({ label: 'View Page Source', click: () => shell.createTab({ url: `view-source:${tab.url}`, openerId: tab.id }) })
     }
     sep()
+    if (tab.split) {
+      items.push(
+        { label: 'Separate Split View', ...accel('CmdOrCtrl+\\'), click: () => shell.unsplit(tab.id) },
+        { label: 'Swap Sides', click: () => shell.swapSplit(tab.id) },
+      )
+      sep()
+    }
   }
 
   try {
@@ -163,6 +170,17 @@ function pageContextMenu(tab, params) {
   // Page coordinates → window coordinates (the page view is inset in the window).
   const bounds = tab.view.getBounds()
   showMenu(shell, items, { x: bounds.x + params.x, y: bounds.y + params.y, fromPage: true })
+}
+
+/** Right-clicking the gap between split pages, or the toolbar's split button. */
+function splitMenu(shell, x, y) {
+  const tab = shell.activeTab()
+  if (!tab?.split) return
+  showMenu(shell, [
+    { label: 'Separate Split View', ...accel('CmdOrCtrl+\\'), click: () => shell.unsplit(tab.id) },
+    { label: 'Swap Sides', click: () => shell.swapSplit(tab.id) },
+    { label: 'Even Out', enabled: Math.abs(tab.split.ratio - 0.5) > 0.01, click: () => shell.resetSplitDivider() },
+  ], { x, y })
 }
 
 function tabContextMenu(shell, id, x, y) {
@@ -197,6 +215,7 @@ function tabContextMenu(shell, id, x, y) {
     { label: 'Move to New Window', enabled: shell.order.length > 1, click: () => shell.moveToNewWindow(tab) },
     { type: 'separator' },
     { label: 'Add to New Group…', click: () => newGroupFor(shell, tab) },
+    { label: 'Group Tabs by Site', type: 'checkbox', checked: require('./auto-groups').enabled(), click: () => require('./auto-groups').setEnabled(!require('./auto-groups').enabled()) },
     ...(otherGroups.length
       ? [{ label: 'Add to Group', submenu: otherGroups.map((group) => ({ label: group.name || 'Unnamed group', icon: groupDot(group.color), click: () => shell.setTabGroup(tab, group.id) })) }]
       : []),
@@ -205,6 +224,7 @@ function tabContextMenu(shell, id, x, y) {
     { label: 'Close Tab', ...accel('CmdOrCtrl+W'), click: () => shell.closeTab(id) },
     { label: 'Close Other Tabs', enabled: shell.order.length > 1, click: () => shell.closeOtherTabs(id) },
     { label: 'Close Tabs to the Right', enabled: index < shell.order.length - 1, click: () => shell.closeTabsToRight(id) },
+    { label: 'Clean Up Tabs…', enabled: shell.order.length > 1, click: () => runAction(shell, 'clean-up-tabs') },
     { type: 'separator' },
     { label: 'Reopen Closed Tab', ...accel('CmdOrCtrl+Shift+T'), enabled: shell.closedTabs.length > 0, click: () => shell.reopenClosedTab() },
   ], { x, y })
@@ -244,6 +264,7 @@ function groupContextMenu(shell, id, x, y) {
         const name = await askGroupName(shell, 'Rename group', group.name, 'Save')
         if (name == null) return
         group.name = name
+        group.auto = false // yours now: it stays if grouping by site is turned off
         shell.scheduleState()
       },
     },
@@ -256,6 +277,7 @@ function groupContextMenu(shell, id, x, y) {
         checked: group.color === color,
         click: () => {
           group.color = color
+          group.auto = false
           shell.scheduleState()
         },
       })),
@@ -385,6 +407,7 @@ function runAction(shell, action) {
     'new-private-window': () => shell.constructor.create({ private: true }),
     'picture-in-picture': () => tab?.togglePictureInPicture(),
     screenshot: () => shell.saveScreenshot(),
+    'toggle-auto-groups': () => require('./auto-groups').setEnabled(!require('./auto-groups').enabled()),
     'toggle-sleep-tabs': () => require('./sleeping-tabs').setEnabled(!require('./sleeping-tabs').enabled()),
     'toggle-split-links': () => {
       const store = require('./store')
@@ -493,6 +516,8 @@ function applicationMenu() {
 }
 
 module.exports = {
+  showMenu,
+  splitMenu,
   pageContextMenu,
   tabContextMenu,
   newTabButtonMenu,

@@ -1,5 +1,6 @@
 // Clean Up Tabs, in the ⋯ menu: offers to close the tabs you've clearly finished with. It only ever offers, and you can
-// untick any of them. A tab you put in a group, or one with something going on in it, is never on the list.
+// untick any of them. A tab in a group you made, or one with something going on in it, is never on the list. A group made by
+// grouping tabs by site doesn't count: that wasn't you choosing to keep it.
 const prompts = require('./prompts')
 const { isNewTab } = require('./url')
 
@@ -32,7 +33,7 @@ async function findTabs(shell, now = Date.now()) {
   const onScreen = shell.visibleTabs()
   const possible = shell.order
     .map((id) => shell.tabs.get(id))
-    .filter((tab) => !onScreen.includes(tab) && tab.groupId == null && !tab.webContents.isDestroyed() && !tab.webContents.isDevToolsOpened())
+    .filter((tab) => !onScreen.includes(tab) && (tab.groupId == null || shell.groups.get(tab.groupId)?.auto) && !tab.webContents.isDestroyed() && !tab.webContents.isDevToolsOpened())
     .map((tab) => ({ tab, reason: reasonToClose(tab, now) }))
     .filter(({ reason }) => reason)
   const inUse = await Promise.all(possible.map(({ tab }) => tab.inUse()))

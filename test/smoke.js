@@ -3161,6 +3161,40 @@ async function run() {
     await wait(200)
   }
 
+  {
+    console.log('\n⋯ menu pages')
+    const page = () => ui(shell, `[...document.querySelectorAll('#main-panel .mp-view')].filter((v) => !v.hidden).map((v) => v.dataset.view).join()`)
+    const open = () => ui(shell, `!document.getElementById('main-panel').hidden`)
+    const tap = (selector) => ui(shell, `document.querySelector('#main-panel ${selector}').click()`)
+    await ui(shell, `document.getElementById('menu-btn').click()`)
+    check('it opens', await until(open, 1000))
+    equal('on its main list', await page(), 'main')
+    const rows = await ui(shell, `document.querySelectorAll('#main-panel [data-view="main"] .mp-item, #main-panel [data-view="main"] .mp-row').length`)
+    check('which is short', rows <= 13, `${rows} rows`)
+    for (const [name, inside] of [['settings', '#mp-graphics'], ['tools', '[data-action="screenshot"]'], ['help', '[data-action="about"]']]) {
+      await tap(`.mp-item[data-view="${name}"]`)
+      equal(`${name} opens in place`, await page(), name)
+      check(`and shows what's in it`, await ui(shell, `document.querySelector('#main-panel ${inside}').offsetParent !== null`))
+      await tap(`.mp-view[data-view="${name}"] .mp-back`)
+      equal('the back arrow returns', await page(), 'main')
+    }
+    await tap(`.mp-item[data-view="settings"]`)
+    const before = shell.getState().sleepTabs
+    await tap('#mp-sleep-tabs')
+    check('a switch there works', await until(() => shell.getState().sleepTabs === !before, 1000))
+    check('and the menu stays open', await open())
+    await tap('#mp-sleep-tabs')
+    await ui(shell, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`)
+    equal('Escape goes back first', await page(), 'main')
+    check('without closing it', await open())
+    await tap(`.mp-item[data-view="help"]`)
+    await ui(shell, `document.getElementById('menu-btn').click()`)
+    await ui(shell, `document.getElementById('menu-btn').click()`)
+    equal('reopening starts on the main list', await page(), 'main')
+    await ui(shell, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`)
+    check('Escape on the main list closes it', await until(async () => !(await open()), 1000))
+  }
+
   electron.screen.getCursorScreenPoint = realCursor
 
   // Let any delayed errors surface.

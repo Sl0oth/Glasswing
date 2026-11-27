@@ -36,6 +36,8 @@ const until = async (fn, ms) => {
 }
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'glasswing-test-'))
 
+process.exitCode = 1 // until every check has run: stopping early is a failure
+
 async function main() {
   console.log('Encryption')
   const key = crypto.randomBytes(32)
@@ -96,6 +98,7 @@ async function main() {
     }
     const running = spawn('/bin/sleep', ['1'])
     const script = macUpdate.swapAfterExit({ pid: running.pid, bundle, newApp, reopen: false })
+    script.ref() // it's let go so it outlives Glasswing; here the test waits for it
     const code = await new Promise((resolve) => script.on('exit', resolve))
     return { dir, bundle, stage, code, which: fs.readFileSync(path.join(bundle, 'which'), 'utf8') }
   }

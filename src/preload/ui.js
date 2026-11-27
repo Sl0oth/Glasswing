@@ -2,8 +2,8 @@
 const { contextBridge, ipcRenderer } = require('electron')
 const { injectBrowserAction } = require('electron-chrome-extensions/browser-action')
 
-// Enables the <browser-action-list> element that renders extension buttons.
-injectBrowserAction()
+// Enables the <browser-action-list> element that renders extension buttons. Private windows don't have any.
+if (!new URLSearchParams(location.search).has('private')) injectBrowserAction()
 
 contextBridge.exposeInMainWorld('glasswing', {
   platform: process.platform,

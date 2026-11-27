@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Side Panel Test",
+  "version": "1.0",
+  "description": "A test extension for Glasswing's side panel. Opens its panel from its toolbar button.",
+  "permissions": ["sidePanel"],
+  "action": { "default_title": "Side Panel Test" },
+  "side_panel": { "default_path": "panel.html" },
+  "background": { "service_worker": "worker.js" }
+}

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <title>Download</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+      .file {
+        position: fixed;
+        left: -23px;
+        top: -29px;
+        width: 46px;
+        height: 58px;
+        will-change: transform, opacity;
+      }
+      .file svg {
+        display: block;
+        filter: drop-shadow(0 6px 12px rgba(0, 0, 0, 0.45));
+      }
+      .kind {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 9px;
+        text-align: center;
+        color: #16171d;
+        font: 700 10px 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+        letter-spacing: 0.3px;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      const PICTURE = `<svg width="46" height="58" viewBox="0 0 46 58"><path d="M6 1h24l15 15v35a6 6 0 0 1-6 6H6a6 6 0 0 1-6-6V7a6 6 0 0 1 6-6z" fill="#f4f5f8"/><path d="M30 1l15 15H34a4 4 0 0 1-4-4z" fill="#c3c7d2"/><path d="M23 18v15m-6.5-6.500L23 33l6.5-6.5" fill="none" stroke="#0a84ff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+      const FLIGHT_MS = 540
+
+      /** One copy of the file along the route. The copies behind it are its trail. */
+      function launch({ from, to }, kind, delay, strength) {
+        const file = document.createElement('div')
+        file.className = 'file'
+        file.innerHTML = PICTURE
+        const label = document.createElement('div')
+        label.className = 'kind'
+        label.textContent = kind
+        file.append(label)
+        document.body.append(file)
+
+        // It rises a little first, then curves up to the button.
+        const dx = to.x - from.x
+        const dy = to.y - from.y
+        const at = (progress, lift, scale, turn) =>
+          `translate(${from.x + dx * progress}px, ${from.y + dy * progress - lift}px) rotate(${turn}deg) scale(${scale})`
+        const lean = dx >= 0 ? 8 : -8
+        const lift = Math.min(70, Math.abs(dy) / 3 + 24)
+        return file.animate(
+          [
+            { offset: 0, opacity: 0, transform: at(0, 0, 0.5, 0), easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.2)' },
+            { offset: 0.2, opacity: strength, transform: at(0, 18, 1.1, -lean / 2), easing: 'cubic-bezier(0.5, 0, 0.2, 1)' },
+            { offset: 0.65, opacity: strength, transform: at(0.62, lift, 0.85, lean) },
+            { offset: 0.92, opacity: strength, transform: at(1, 6, 0.42, lean / 2) },
+            { offset: 1, opacity: 0, transform: at(1, 0, 0.24, 0) },
+          ],
+          { duration: FLIGHT_MS, delay, fill: 'both' },
+        ).finished
+      }
+
+      window.fly = (route) => {
+        const extension = /\.([a-z0-9]{1,4})$/i.exec(route.filename)?.[1] ?? ''
+        const kind = extension.toUpperCase()
+        // The trail goes first in the page, so the file itself is drawn on top.
+        return Promise.all([launch(route, kind, 70, 0.14), launch(route, kind, 35, 0.28), launch(route, kind, 0, 1)]).then(() => true)
+      }
+    </script>
+  </body>
+</html>

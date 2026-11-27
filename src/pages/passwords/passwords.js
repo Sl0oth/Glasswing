@@ -50,7 +50,7 @@ async function load() {
     ...saved.map((entry) =>
       card({
         origin: entry.origin,
-        subtitle: entry.username || '(no username)',
+        subtitle: `${entry.username || '(no username)'}  ·  ${'•'.repeat(Math.min(entry.length, 40))}`,
         onRemove: () => send(`/api/passwords/${entry.id}`, 'DELETE'),
       }),
     ),

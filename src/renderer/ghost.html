@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src https: http: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>Tab</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }
+      #pill {
+        box-sizing: border-box;
+        height: 34px;
+        margin: 3px;
+        padding: 0 12px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 17px;
+        background: rgba(28, 29, 36, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        color: rgba(255, 255, 255, 0.92);
+        font: 12.5px 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+      }
+      img {
+        width: 16px;
+        height: 16px;
+        flex: none;
+        border-radius: 3px;
+      }
+      span {
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="pill"><span id="title"></span></div>
+    <script>
+      window.setTab = ({ title, favicon }) => {
+        document.getElementById('title').textContent = title
+        if (favicon) {
+          const img = new Image()
+          img.src = favicon
+          img.onerror = () => img.remove()
+          document.getElementById('pill').prepend(img)
+        }
+      }
+    </script>
+  </body>
+</html>

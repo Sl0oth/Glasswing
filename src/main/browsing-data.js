@@ -22,6 +22,7 @@ async function clearBrowsingData(session, options = {}) {
   const visitedOrigins = history.originsSince(since)
 
   if (options.history) history.clear(since)
+  if (options.history && since === 0) require('./favicons').clear() // which sites' icons are saved says where you've been
 
   if (options.cookies) {
     // Never wipe extensions' own storage (their settings, logins, ...).
@@ -29,6 +30,7 @@ async function clearBrowsingData(session, options = {}) {
     if (since === 0) {
       await session.clearData({ dataTypes: SITE_DATA, excludeOrigins: extensionOrigins })
       fs.rmSync(path.join(app.getPath('userData'), 'session-cookies.bin'), { force: true })
+      require('./certificates').forgetAll() // devices you chose to trust despite their certificate
     } else if (visitedOrigins.length) {
       // Chromium can't clear cookies by date; clear the sites visited during the period instead.
       await session.clearData({ dataTypes: SITE_DATA, origins: visitedOrigins })

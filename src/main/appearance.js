@@ -28,6 +28,7 @@ const DEFAULTS = {
   material: 'acrylic',
   autoHide: true, // toolbar hidden until the mouse touches the top edge; the page fills the window
   fullscreen: true, // windows open full screen (covers the taskbar)
+  favoritesBar: true, // row of favorites under the toolbar
 }
 
 const HEX = /^#[0-9a-f]{6}$/i
@@ -50,6 +51,7 @@ function sanitize(input) {
     material: MATERIALS.includes(a.material) ? a.material : DEFAULTS.material,
     autoHide: typeof a.autoHide === 'boolean' ? a.autoHide : DEFAULTS.autoHide,
     fullscreen: typeof a.fullscreen === 'boolean' ? a.fullscreen : DEFAULTS.fullscreen,
+    favoritesBar: typeof a.favoritesBar === 'boolean' ? a.favoritesBar : DEFAULTS.favoritesBar,
   }
 }
 

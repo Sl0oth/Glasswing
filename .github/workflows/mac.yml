@@ -1,0 +1,51 @@
+# Builds the Mac versions on one of GitHub's Macs when a version tag is pushed, and adds them to that tag's
+# release (a draft is fine, so nothing goes out until the Mac files are there): a .dmg and a .zip for Apple
+# chips and for Intel, and latest-mac.yml, which Mac copies read to find updates.
+#
+# A push to a release branch builds and tests the same way, without adding anything anywhere.
+name: Mac build
+
+on:
+  push:
+    tags: ['v*']
+    branches: ['release/**']
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build
+        run: npm run dist:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false' # no Apple certificate: signed ad hoc instead
+      - name: Test the Mac parts
+        run: |
+          # A keychain of its own, so the test's key is made and read the way it is on a real Mac.
+          security create-keychain -p test test.keychain
+          security set-keychain-settings test.keychain
+          security unlock-keychain -p test test.keychain
+          security list-keychains -d user -s test.keychain
+          security default-keychain -s test.keychain
+          node test/mac.js
+      - name: Check the signature
+        run: codesign --verify --deep --strict dist/mac-arm64/Glasswing.app && echo signed
+      - name: Check macOS can choose it as the browser
+        run: test "$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.1 raw dist/mac-arm64/Glasswing.app/Contents/Info.plist)" = https
+      - name: Add to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release upload "$TAG" dist/Glasswing-arm64.dmg dist/Glasswing-x64.dmg dist/Glasswing-arm64.zip dist/Glasswing-x64.zip dist/latest-mac.yml --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

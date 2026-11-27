@@ -1,29 +1,54 @@
 // Cookies, localStorage, IndexedDB etc. already live on disk in the default session. This adds
 // what Chrome's "continue where you left off" does: session cookies (no expiry date, e.g. many
-// logins) survive a restart. They're encrypted with the OS keystore (DPAPI on Windows).
-const { app, safeStorage } = require('electron')
+// logins) survive a restart. They're encrypted with the OS keystore (DPAPI on Windows; see secrets.js for a Mac).
+const { app } = require('electron')
+const safeStorage = require('./secrets')
 const fs = require('node:fs')
 const path = require('node:path')
+const { writeFileSafely } = require('./store')
+
+const SAVE_AFTER_CHANGE_MS = 30_000
 
 const file = () => path.join(app.getPath('userData'), 'session-cookies.bin')
 
 async function saveSessionCookies(session) {
   if (!safeStorage.isEncryptionAvailable()) return // never write cookies in plaintext
   const cookies = (await session.cookies.get({})).filter((c) => c.session)
-  fs.writeFileSync(file(), safeStorage.encryptString(JSON.stringify(cookies)))
+  writeFileSafely(file(), safeStorage.encryptString(JSON.stringify(cookies)))
+}
+
+/**
+ * Saves soon after they change, not just when quitting. Otherwise a crash brings back an old copy,
+ * which signs you out of sites, or back in to one you'd signed out of.
+ */
+function keepSessionCookiesSaved(session, delay = SAVE_AFTER_CHANGE_MS) {
+  let timer = null
+  session.cookies.on('changed', (_event, cookie) => {
+    if (!cookie.session || timer) return
+    timer = setTimeout(() => {
+      timer = null
+      saveSessionCookies(session).catch((err) => console.error('Could not save session cookies:', err))
+    }, delay)
+    timer.unref?.()
+  })
 }
 
 async function restoreSessionCookies(session) {
   let cookies
+  let oldWay = false
   try {
     if (!safeStorage.isEncryptionAvailable() || !fs.existsSync(file())) return
-    cookies = JSON.parse(safeStorage.decryptString(fs.readFileSync(file())))
+    const data = fs.readFileSync(file())
+    oldWay = safeStorage.needsMigrating(data)
+    cookies = JSON.parse(safeStorage.decryptString(data))
   } catch {
     return
   }
+  if (!Array.isArray(cookies)) return
   await Promise.all(
     cookies.map((c) => {
-      const host = c.domain.replace(/^\./, '')
+      const host = String(c?.domain ?? '').replace(/^\./, '')
+      if (!host) return null
       return session.cookies
         .set({
           url: `${c.secure ? 'https' : 'http'}://${host}${c.path || '/'}`,
@@ -38,6 +63,8 @@ async function restoreSessionCookies(session) {
         .catch(() => {})
     }),
   )
+  // Saved again with the new key straight away, so the old one is never asked for again.
+  if (oldWay) await saveSessionCookies(session).catch((err) => console.error('Could not save session cookies:', err))
 }
 
 /** Runs `promise`, logging if it's slow; never waits longer than `ms`. */
@@ -65,4 +92,4 @@ async function flushAll(session) {
   ])
 }
 
-module.exports = { restoreSessionCookies, flushAll }
+module.exports = { restoreSessionCookies, keepSessionCookiesSaved, flushAll }

@@ -1,7 +1,7 @@
 const { app, protocol, session, nativeTheme, Menu, webContents } = require('electron')
 const prompts = require('./prompts')
 const { installChromeWebStore } = require('electron-chrome-web-store')
-const { APP_NAME, SCHEME } = require('./constants')
+const { APP_ID, APP_NAME, SCHEME } = require('./constants')
 const { registerInternalProtocol } = require('./protocol')
 const { setupPermissions } = require('./permissions')
 const { setupDownloads } = require('./downloads')
@@ -10,10 +10,26 @@ const { BrowserShell } = require('./shell')
 const { applicationMenu } = require('./menus')
 const { setupPasswords } = require('./passwords')
 const { setupGoogleSignIn } = require('./google-signin')
-const { restoreSessionCookies, flushAll } = require('./persistence')
+const { restoreSessionCookies, keepSessionCookiesSaved, flushAll } = require('./persistence')
 const extensions = require('./extensions')
+const blocker = require('./blocker')
+const { setupPrivacy, applySecureDns } = require('./privacy')
+const { setupSiteLogin } = require('./site-login')
+const setup = require('./setup')
+const updater = require('./updater')
 const store = require('./store')
+const defaultBrowser = require('./default-browser')
 const path = require('node:path')
+const fs = require('node:fs')
+
+// Lets a test run an installed copy against a throwaway profile, even after it restarts itself to update.
+if (process.env.GLASSWING_PROFILE) app.setPath('userData', process.env.GLASSWING_PROFILE)
+
+// Some graphics drivers crash Windows itself. With this off, pages are drawn without the graphics card.
+// It can only be decided before anything starts, so changing it takes a restart.
+if (store.get('graphicsAcceleration') === false) app.disableHardwareAcceleration()
+
+let starting = true // until the first browser window is open
 
 /**
  * Present as plain Chrome. Electron's default user agent advertises "Electron/x" and the app
@@ -42,8 +58,8 @@ async function confirmExtensionInstall({ localizedName, manifest, icon, frame })
 
   const { button } = await prompts.ask(shell, {
     icon,
-    title: `Add â€œ${localizedName}â€?`,
-    message: permissions.length ? 'It will be able to use:' : 'It doesnâ€™t request any special permissions.',
+    title: `Add “${localizedName}”?`,
+    message: permissions.length ? 'It will be able to use:' : 'It doesn’t request any special permissions.',
     detail: listed.join('\n'),
     buttons: [
       { id: 'cancel', label: 'Cancel', style: 'secondary' },
@@ -63,12 +79,33 @@ async function confirmExtensionInstall({ localizedName, manifest, icon, frame })
 function startExitWatchdog(ms) {
   const { spawn } = require('node:child_process')
   const script = `setTimeout(() => { try { process.kill(${process.pid}) } catch {} }, ${ms})`
-  spawn(process.execPath, ['-e', script], {
+  const helper = spawn(process.execPath, ['-e', script], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
-  }).unref()
+  })
+  helper.on('error', (err) => logError('Exit watchdog failed to start', err))
+  helper.unref()
+}
+
+/** Problems go to glasswing.log in the profile folder instead of a native error dialog. */
+function logError(kind, err) {
+  const line = `[${new Date().toISOString()}] ${kind}: ${err?.stack ?? err}\n`
+  console.error(line)
+  try {
+    fs.appendFileSync(path.join(app.getPath('userData'), 'glasswing.log'), line)
+  } catch {}
+}
+
+/** Links from other apps: into the window you used last, or a new one if there isn't one. */
+function openFromOutside(urls) {
+  if (!urls.length) return
+  const shell = BrowserShell.lastNormal()
+  if (!shell) return BrowserShell.create({ urls })
+  for (const url of urls) shell.createTab({ url })
+  shell.bringBack()
+  shell.focus()
 }
 
 function restoreWindows(extraUrls) {
@@ -80,7 +117,7 @@ function restoreWindows(extraUrls) {
   saved.forEach((w, i) => {
     const tabs = i === saved.length - 1 ? [...w.tabs, ...extraUrls.map((url) => ({ url }))] : w.tabs
     const activeIndex = extraUrls.length && i === saved.length - 1 ? tabs.length - 1 : w.active
-    BrowserShell.create({ tabs, activeIndex, bounds: w.bounds, maximized: w.maximized })
+    BrowserShell.create({ tabs, activeIndex, bounds: w.bounds, maximized: w.maximized, splits: w.splits, groups: w.groups })
   })
 }
 
@@ -94,28 +131,76 @@ async function start() {
   setupPasswords()
   setupGoogleSignIn(ses)
   setupIpc()
+  require('./side-panel').setup(ses) // before the extensions library, whose preload freezes `chrome`
   extensions.init(ses)
+  require('./side-panel').wrapActions(extensions.get())
   ses.registerPreloadScript({
     id: 'glasswing-autofill',
     type: 'frame',
     filePath: path.join(__dirname, '..', 'preload', 'autofill.js'),
   })
-  await restoreSessionCookies(ses)
-
+  ses.registerPreloadScript({
+    id: 'glasswing-capture',
+    type: 'frame',
+    filePath: path.join(__dirname, '..', 'preload', 'capture.js'),
+  })
+  ses.registerPreloadScript({
+    id: 'glasswing-split-links',
+    type: 'frame',
+    filePath: path.join(__dirname, '..', 'preload', 'split-links.js'),
+  })
+  ses.registerPreloadScript({
+    id: 'glasswing-youtube-recovery',
+    type: 'frame',
+    filePath: path.join(__dirname, '..', 'preload', 'youtube-recovery.js'),
+  })
+  // Not in private windows: your email isn't signed in there, and asking would mean remembering something.
+  ses.registerPreloadScript({
+    id: 'glasswing-email-code',
+    type: 'frame',
+    filePath: path.join(__dirname, '..', 'preload', 'email-code.js'),
+  })
+  setupPrivacy()
+  require('./certificates').setup()
+  applySecureDns(blocker.getSettings().secureDns)
+  setupSiteLogin()
+  // None of these is worth failing to open a window over.
+  await blocker.init(ses).catch((err) => logError('Could not start ad and tracker blocking', err))
+  // The rest of startup can carry on behind it, but no browser window opens until it's done with.
+  const setupDone = setup.needed() ? setup.open() : Promise.resolve()
+  await restoreSessionCookies(ses).catch((err) => logError('Could not restore session cookies', err))
+  keepSessionCookiesSaved(ses)
   try {
     // Lets the Chrome Web Store's "Add to Chrome" button install into this browser, loads
     // previously installed extensions, and keeps them updated.
     await installChromeWebStore({ session: ses, beforeInstall: confirmExtensionInstall })
   } catch (err) {
-    console.error('Chrome Web Store support failed to initialize:', err)
+    logError('Chrome Web Store support failed to initialize', err)
   }
 
-  restoreWindows(urlsFromArgv(process.argv))
+  await setupDone
+
+  try {
+    restoreWindows([...urlsFromArgv(process.argv), ...defaultBrowser.takePending(openFromOutside)])
+  } catch (err) {
+    // A damaged saved session shouldn't stop the browser from opening.
+    logError('Could not restore the last session', err)
+    if (BrowserShell.all.size === 0) BrowserShell.create()
+  }
+  starting = false
+  BrowserShell.keepSessionSaved()
+  updater.start()
+  require('./sleeping-tabs').start()
+  defaultBrowser.suggestLater()
 }
 
-// â”€â”€ Bootstrap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Bootstrap ──────────────────────────────────────────────────────────
+
+process.on('uncaughtException', (err) => logError('Uncaught exception', err))
+process.on('unhandledRejection', (err) => logError('Unhandled rejection', err))
 
 app.setName(APP_NAME)
+if (process.platform === 'win32') app.setAppUserModelId(APP_ID) // must match the installer's shortcuts
 app.userAgentFallback = chromeUserAgent()
 nativeTheme.themeSource = 'dark'
 
@@ -126,28 +211,42 @@ protocol.registerSchemesAsPrivileged([
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
+  defaultBrowser.listen() // macOS can send the link that launched Glasswing before it's ready
   app.on('second-instance', (_event, argv) => {
+    if (setup.focus() && starting) return
     const urls = urlsFromArgv(argv)
-    const shell = BrowserShell.lastFocused()
-    if (!shell) return BrowserShell.create({ urls })
-    for (const url of urls) shell.createTab({ url })
+    if (urls.length) return openFromOutside(urls)
+    const shell = BrowserShell.lastNormal()
+    if (!shell) return BrowserShell.create()
+    shell.bringBack()
     shell.focus()
   })
 
   app.on('window-all-closed', () => {
+    if (starting) return // the setup window closed, and the browser's about to open
     if (process.platform !== 'darwin') app.quit()
   })
 
+  // Clicking Glasswing in the Dock. Brings back any window that's gone missing, as well as making one if there's none.
   app.on('activate', () => {
-    if (app.isReady() && BrowserShell.all.size === 0) BrowserShell.create()
+    if (!app.isReady() || starting) return // the first window is on its way
+    const shells = [...BrowserShell.all].filter((shell) => !shell.win.isDestroyed())
+    if (shells.length === 0) return BrowserShell.create()
+    const open = shells.filter((shell) => !shell.win.isMinimized())
+    for (const shell of open.length ? open : [BrowserShell.lastFocused()]) shell.bringBack()
+    if (!shells.some((shell) => shell.win.isVisible())) BrowserShell.create()
   })
 
   let flushed = false
   app.on('before-quit', (event) => {
     if (BrowserShell.all.size > 0) BrowserShell.saveSession()
     BrowserShell.quitting = true
-    if (!flushed && require('./history').getSettings().clearOnExit) require('./history').clear(0)
+    if (!flushed && require('./history').getSettings().clearOnExit) {
+      require('./history').clear(0)
+      require('./favicons').clear()
+    }
     store.flush()
+    require('./favicons').flush()
     if (flushed || !app.isReady()) return
     // Make sure cookies and site storage are on disk before exiting.
     event.preventDefault()
@@ -159,5 +258,9 @@ if (!app.requestSingleInstanceLock()) {
     })
   })
 
-  app.whenReady().then(start)
+  app.whenReady().then(start).catch((err) => {
+    logError('Startup failed', err)
+    starting = false
+    if (BrowserShell.all.size === 0) BrowserShell.create()
+  })
 }

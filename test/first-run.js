@@ -270,6 +270,8 @@ async function firstLaunch() {
   await shot('5-browsing')
   const overflow = await page(`(() => { const m = document.querySelector('main'); const out = []; const now = document.querySelector('section.current'); const result = document.getElementById('import-result'); for (const s of document.querySelectorAll('section')) { now.classList.remove('current'); s.classList.add('current'); if (s.scrollHeight > m.clientHeight) out.push(s.dataset.step + ' ' + s.scrollHeight + '>' + m.clientHeight); s.classList.remove('current'); now.classList.add('current') } return out })()`)
   equal('every step fits the window, even with an import result showing', overflow, [])
+  equal('the default browser step is only there on a Mac', await page(`Boolean(document.querySelector('section[data-step="default"]'))`), process.platform === 'darwin')
+  equal('with a dot for each step', await page(`document.querySelectorAll('#dots i').length === document.querySelectorAll('section').length`), true)
 
   console.log('\nUpdates and finishing')
   await next()

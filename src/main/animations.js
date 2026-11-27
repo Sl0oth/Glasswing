@@ -54,6 +54,9 @@ async function flyDownload(shell, filename, landed) {
   }
   const timeout = setTimeout(finish, FLIGHT_TIMEOUT_MS)
   try {
+    // Not on a Mac: closing a window attached to another one there can take the other one off the screen with it,
+    // leaving Glasswing running with no window you can get back.
+    if (process.platform === 'darwin') return finish()
     if (!enabled() || win.isDestroyed() || win.isMinimized() || !win.isVisible() || shell.htmlFullscreen) return finish()
     shell.peek()
     const endX = await shell.ui.webContents.executeJavaScript(DOWNLOADS_BUTTON_X)

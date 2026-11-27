@@ -3229,6 +3229,20 @@ async function run() {
     equal('reopening starts on the main list', await page(), 'main')
     await ui(shell, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`)
     check('Escape on the main list closes it', await until(async () => !(await open()), 1000))
+    equal('the default browser choice is only offered on a Mac', await ui(shell, `document.getElementById('mp-default-row').hidden`), process.platform !== 'darwin')
+  }
+
+  {
+    console.log('\nBringing a lost window back')
+    // Never shown, so moving it doesn't put anything on your screen.
+    const lost = BrowserShell.create({ urls: [`${base}/white`], fullscreen: false })
+    await wait(300)
+    lost.win.setBounds({ x: -9000, y: -9000, width: 900, height: 600 })
+    lost.bringBack()
+    const b = lost.win.getBounds()
+    check('a window left off every screen comes back onto one', electron.screen.getAllDisplays().some(({ workArea: a }) => b.x >= a.x - 1 && b.y >= a.y - 1 && b.x + 100 < a.x + a.width), JSON.stringify(b))
+    lost.win.destroy()
+    await wait(200)
   }
 
   electron.screen.getCursorScreenPoint = realCursor

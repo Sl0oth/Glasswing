@@ -8,9 +8,10 @@ const prompts = require('./prompts')
 
 const appIcon = () => nativeImage.createFromPath(path.join(__dirname, '..', '..', 'assets', 'icon.png'))
 
-// A Mac only installs an update by itself for apps signed with a paid Apple developer certificate, which
-// Glasswing doesn't have. So on a Mac it says when there's a new version and downloads it for you instead.
+// A Mac's own updater only installs apps signed with a paid Apple developer certificate, which Glasswing doesn't
+// have, so there mac-update.js installs it instead. When it can't, Glasswing downloads the .dmg for you.
 const isMac = process.platform === 'darwin'
+const macUpdate = isMac ? require('./mac-update') : null
 const RELEASES = 'https://github.com/Sl0oth/Glasswing/releases'
 const macDownloadUrl = (version) => `${RELEASES}/download/v${version}/Glasswing-${process.arch === 'arm64' ? 'arm64' : 'x64'}.dmg`
 
@@ -23,6 +24,7 @@ let manualShell = null // a window that asked to check, and so wants to hear the
 let offeredVersion = null
 let readyVersion = null
 let downloading = false
+let available = null // what latest-mac.yml said, for a Mac to download
 
 function getMode() {
   return store.get('updates')?.mode === 'ask' ? 'ask' : 'auto'
@@ -41,10 +43,27 @@ function currentShell() {
 function download() {
   if (downloading || readyVersion) return
   downloading = true
+  if (isMac) return downloadForMac(available)
   updater.downloadUpdate().catch((err) => {
     downloading = false
     failed(err)
   })
+}
+
+function downloadForMac(info) {
+  const base = process.env.GLASSWING_UPDATE_FEED || `${RELEASES}/download/v${info.version}`
+  macUpdate
+    .prepare(info, base)
+    .then((newApp) => {
+      downloading = false
+      readyVersion = info.version
+      macUpdate.installOnQuit(info.version, newApp) // so "Later" still gets it next time you quit
+      offerRestart()
+    })
+    .catch((err) => {
+      downloading = false
+      failed(err)
+    })
 }
 
 function failed(err) {
@@ -71,7 +90,9 @@ async function offerRestart(shell = currentShell()) {
     ],
     cancelId: 'later',
   })
-  if (button === 'restart') updater.quitAndInstall(true, true)
+  if (button !== 'restart') return
+  if (isMac) macUpdate.restartToInstall()
+  else updater.quitAndInstall(true, true)
 }
 
 async function offerDownload(version, shell = currentShell()) {
@@ -136,15 +157,17 @@ function start() {
   const { autoUpdater } = require('electron-updater')
   updater = autoUpdater
   updater.autoDownload = false // decided below, according to the setting
-  updater.autoInstallOnAppQuit = true
+  updater.autoInstallOnAppQuit = !isMac // a Mac installs on quit through mac-update.js
   updater.logger = null
   // For testing a build against a local copy of a release, without publishing anything.
   if (process.env.GLASSWING_UPDATE_FEED) updater.setFeedURL({ provider: 'generic', url: process.env.GLASSWING_UPDATE_FEED })
 
-  updater.on('update-available', ({ version }) => {
+  updater.on('update-available', (info) => {
+    const { version } = info
     const shell = manualShell
     manualShell = null
-    if (isMac) {
+    available = info
+    if (isMac && !macUpdate.canSelfUpdate()) {
       if (shell || offeredVersion !== version) {
         offeredVersion = version
         offerMacDownload(version, shell ?? currentShell())

@@ -44,6 +44,7 @@ const search = require('./search')
 const store = require('./store')
 const sleepingTabs = require('./sleeping-tabs')
 const animations = require('./animations')
+const defaultBrowser = require('./default-browser')
 const { uniquePath } = require('./downloads')
 
 const isMac = process.platform === 'darwin'
@@ -289,6 +290,7 @@ class BrowserShell {
       this.scheduleState()
     })
     win.on('focus', () => {
+      defaultBrowser.refresh() // you may have just answered macOS about it
       BrowserShell.focused = this
       BrowserShell.recent = [this, ...BrowserShell.recent.filter((s) => s !== this)]
       this.scheduleState()
@@ -1253,6 +1255,7 @@ class BrowserShell {
       splitLinks: store.get('splitLinks') !== false,
       emailCodes: store.get('emailCodes') !== false,
       graphics: store.get('graphicsAcceleration') !== false,
+      defaultBrowser: defaultBrowser.supported ? defaultBrowser.isDefault() : null,
       tabs: this.order.map((id) => this.tabs.get(id).state()),
       groups: [...this.groups.values()].map((group) => ({ ...group, count: [...this.tabs.values()].filter((tab) => tab.groupId === group.id).length })),
       activeId: this.activeId,
@@ -1290,6 +1293,18 @@ class BrowserShell {
   focus() {
     if (this.win.isMinimized()) this.win.restore()
     this.win.focus()
+  }
+
+  /** Puts the window back where you can see it: on a screen, not minimized, and in front. */
+  bringBack() {
+    const win = this.win
+    if (win.isDestroyed()) return
+    if (win.isMinimized()) win.restore()
+    if (!win.isFullScreen() && !boundsAreVisible(win.getBounds())) {
+      win.setBounds({ width: 1280, height: 820 })
+      win.center()
+    }
+    win.show()
   }
 
   serialize() {

@@ -18,6 +18,7 @@ const { setupSiteLogin } = require('./site-login')
 const setup = require('./setup')
 const updater = require('./updater')
 const store = require('./store')
+const defaultBrowser = require('./default-browser')
 const path = require('node:path')
 const fs = require('node:fs')
 
@@ -97,6 +98,16 @@ function logError(kind, err) {
   } catch {}
 }
 
+/** Links from other apps: into the window you used last, or a new one if there isn't one. */
+function openFromOutside(urls) {
+  if (!urls.length) return
+  const shell = BrowserShell.lastNormal()
+  if (!shell) return BrowserShell.create({ urls })
+  for (const url of urls) shell.createTab({ url })
+  shell.bringBack()
+  shell.focus()
+}
+
 function restoreWindows(extraUrls) {
   const saved = store.get('session')?.windows?.filter((w) => w.tabs?.length) ?? []
   if (saved.length === 0) {
@@ -170,7 +181,7 @@ async function start() {
   await setupDone
 
   try {
-    restoreWindows(urlsFromArgv(process.argv))
+    restoreWindows([...urlsFromArgv(process.argv), ...defaultBrowser.takePending(openFromOutside)])
   } catch (err) {
     // A damaged saved session shouldn't stop the browser from opening.
     logError('Could not restore the last session', err)
@@ -180,6 +191,7 @@ async function start() {
   BrowserShell.keepSessionSaved()
   updater.start()
   require('./sleeping-tabs').start()
+  defaultBrowser.suggestLater()
 }
 
 // ── Bootstrap ──────────────────────────────────────────────────────────
@@ -199,12 +211,14 @@ protocol.registerSchemesAsPrivileged([
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
+  defaultBrowser.listen() // macOS can send the link that launched Glasswing before it's ready
   app.on('second-instance', (_event, argv) => {
     if (setup.focus() && starting) return
     const urls = urlsFromArgv(argv)
+    if (urls.length) return openFromOutside(urls)
     const shell = BrowserShell.lastNormal()
-    if (!shell) return BrowserShell.create({ urls })
-    for (const url of urls) shell.createTab({ url })
+    if (!shell) return BrowserShell.create()
+    shell.bringBack()
     shell.focus()
   })
 
@@ -213,8 +227,14 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform !== 'darwin') app.quit()
   })
 
+  // Clicking Glasswing in the Dock. Brings back any window that's gone missing, as well as making one if there's none.
   app.on('activate', () => {
-    if (app.isReady() && BrowserShell.all.size === 0) BrowserShell.create()
+    if (!app.isReady() || starting) return // the first window is on its way
+    const shells = [...BrowserShell.all].filter((shell) => !shell.win.isDestroyed())
+    if (shells.length === 0) return BrowserShell.create()
+    const open = shells.filter((shell) => !shell.win.isMinimized())
+    for (const shell of open.length ? open : [BrowserShell.lastFocused()]) shell.bringBack()
+    if (!shells.some((shell) => shell.win.isVisible())) BrowserShell.create()
   })
 
   let flushed = false

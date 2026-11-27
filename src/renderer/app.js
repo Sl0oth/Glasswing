@@ -1457,7 +1457,7 @@ const PANEL_UI_ACTIONS = {
   customize: () => toggleCustomize(true),
 }
 // Actions you'd likely repeat keep the panel open.
-const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-auto-groups', 'toggle-split-links', 'toggle-email-codes', 'toggle-graphics'])
+const PANEL_STAYS_OPEN = new Set(['zoom-in', 'zoom-out', 'zoom-reset', 'toggle-autohide', 'toggle-favorites-bar', 'toggle-protection', 'toggle-sleep-tabs', 'toggle-auto-groups', 'toggle-split-links', 'toggle-email-codes', 'toggle-graphics', 'make-default-browser'])
 
 function syncMainPanel() {
   const tab = activeTab()
@@ -1471,6 +1471,9 @@ function syncMainPanel() {
   $('#mp-split-links').classList.toggle('on', Boolean(state.splitLinks))
   $('#mp-email-codes').classList.toggle('on', Boolean(state.emailCodes))
   $('#mp-graphics').classList.toggle('on', Boolean(state.graphics))
+  $('#mp-default-row').hidden = state.defaultBrowser == null // only on a Mac so far
+  $('#mp-default-browser').textContent = state.defaultBrowser ? 'Yes' : 'Make Default'
+  $('#mp-default-browser').disabled = Boolean(state.defaultBrowser)
   $('#mp-split-label').textContent = tab?.split ? 'Separate Split View' : 'Split View'
   $('#mp-favorite-label').textContent = `${favoriteUrls.has(tab?.url) ? 'Remove from' : 'Add to'} Favorites`
   $('[data-action="favorite"]', mainPanel).disabled = !/^https?:/.test(tab?.url ?? '')

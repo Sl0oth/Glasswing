@@ -20,9 +20,13 @@ The installer isn't signed yet, so Windows SmartScreen may say it doesn't recogn
 **Mac:** get `Glasswing-arm64.dmg` for a Mac with an Apple chip (M1 or later), or `Glasswing-x64.dmg` for
 an Intel Mac. Open it and drag Glasswing into Applications. It isn't signed with an Apple developer
 certificate, so the first time, macOS says it can't check it. Open **System Settings → Privacy & Security**,
-scroll down, and choose **Open Anyway** next to Glasswing. On a Mac, Glasswing tells you when there's a new
-version and downloads it for you, and you drag it into Applications again; it can't replace itself without
-that certificate. Your tabs and settings stay.
+scroll down, and choose **Open Anyway** next to Glasswing. That's only needed once: from 1.0.11, Glasswing
+downloads and installs its own updates when you quit or restart it, and macOS has nothing to ask about them.
+(It falls back to downloading the `.dmg` for you if it can't write where it is, say when run from the disk image.)
+
+On a Mac, the key that encrypts saved passwords and sign-ins is kept in your keychain by Apple's `security`
+tool, so macOS doesn't ask for your password at each start or after each update. Updating to 1.0.11 asks one last
+time, to read what the old key encrypted.
 
 ## Run from source
 

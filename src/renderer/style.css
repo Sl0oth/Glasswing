@@ -309,6 +309,11 @@ body:not(.blurred) .wc-max {
   background: var(--fill-1);
 }
 
+.text-btn:disabled {
+  color: var(--text-dim);
+  background: transparent;
+}
+
 /* Extension buttons */
 browser-action-list {
   display: flex;

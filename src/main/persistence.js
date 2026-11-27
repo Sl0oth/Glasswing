@@ -1,7 +1,8 @@
 // Cookies, localStorage, IndexedDB etc. already live on disk in the default session. This adds
 // what Chrome's "continue where you left off" does: session cookies (no expiry date, e.g. many
-// logins) survive a restart. They're encrypted with the OS keystore (DPAPI on Windows).
-const { app, safeStorage } = require('electron')
+// logins) survive a restart. They're encrypted with the OS keystore (DPAPI on Windows; see secrets.js for a Mac).
+const { app } = require('electron')
+const safeStorage = require('./secrets')
 const fs = require('node:fs')
 const path = require('node:path')
 const { writeFileSafely } = require('./store')
@@ -34,9 +35,12 @@ function keepSessionCookiesSaved(session, delay = SAVE_AFTER_CHANGE_MS) {
 
 async function restoreSessionCookies(session) {
   let cookies
+  let oldWay = false
   try {
     if (!safeStorage.isEncryptionAvailable() || !fs.existsSync(file())) return
-    cookies = JSON.parse(safeStorage.decryptString(fs.readFileSync(file())))
+    const data = fs.readFileSync(file())
+    oldWay = safeStorage.needsMigrating(data)
+    cookies = JSON.parse(safeStorage.decryptString(data))
   } catch {
     return
   }
@@ -59,6 +63,8 @@ async function restoreSessionCookies(session) {
         .catch(() => {})
     }),
   )
+  // Saved again with the new key straight away, so the old one is never asked for again.
+  if (oldWay) await saveSessionCookies(session).catch((err) => console.error('Could not save session cookies:', err))
 }
 
 /** Runs `promise`, logging if it's slow; never waits longer than `ms`. */

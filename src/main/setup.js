@@ -9,6 +9,7 @@ const browserImport = require('./browser-import')
 const search = require('./search')
 const store = require('./store')
 const updater = require('./updater')
+const defaultBrowser = require('./default-browser')
 
 const ICON_PATH = path.join(__dirname, '..', '..', 'assets', 'icon.png')
 
@@ -31,6 +32,7 @@ function fullState() {
     engine: search.current().id,
     protection: { ads, trackers },
     updates: updater.getMode(),
+    defaultBrowser: { supported: defaultBrowser.supported, isDefault: defaultBrowser.isDefault() },
     browsers: browserImport.detect(),
   }
 }
@@ -57,6 +59,11 @@ function setupHandlers() {
   })
   handle('updates', (mode) => updater.setMode(mode))
   handle('import', (browserId, profile, what) => browserImport.run(browserId, profile, what))
+  handle('make-default', () => defaultBrowser.makeDefault())
+  handle('is-default', () => {
+    defaultBrowser.refresh()
+    return defaultBrowser.isDefault()
+  })
   handle('finish', () => win.close())
 }
 

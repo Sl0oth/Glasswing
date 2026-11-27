@@ -10,5 +10,7 @@ contextBridge.exposeInMainWorld('setup', {
   protection: call('protection'),
   updates: call('updates'),
   import: call('import'),
+  makeDefault: call('make-default'),
+  isDefault: call('is-default'),
   finish: call('finish'),
 })

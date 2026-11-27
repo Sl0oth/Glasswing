@@ -2,7 +2,7 @@
 
 const $ = (selector) => document.querySelector(selector)
 const api = window.setup
-const steps = [...document.querySelectorAll('section')]
+let steps = [] // set once it's known which steps this computer gets
 const NEXT_LABELS = { welcome: 'Get Started', updates: 'Start Browsing' }
 
 let state = null
@@ -15,7 +15,6 @@ const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`
 // ── Moving between steps ─────────────────────────────────────────────────
 
 const dots = $('#dots')
-steps.forEach(() => dots.append(document.createElement('i')))
 
 function selectedBrowser() {
   const picked = document.querySelector('input[name="browser"]:checked')
@@ -259,10 +258,28 @@ function renderChoices() {
   if (mode) mode.checked = true
 }
 
+// ── Default browser ──────────────────────────────────────────────────────
+
+function renderDefault(isDefault) {
+  $('#default-title').textContent = isDefault ? 'Glasswing is your default browser' : 'Make Glasswing your default browser'
+  $('#default-detail').textContent = isDefault ? 'Links from other apps open here.' : 'macOS asks you to confirm.'
+  $('#default-btn').hidden = isDefault
+}
+
+$('#default-btn').addEventListener('click', () => api.makeDefault()) // bound before the step can be removed
+// macOS asks in a window of its own, so look again when you come back from it.
+window.addEventListener('focus', async () => {
+  if (state?.defaultBrowser.supported) renderDefault(await api.isDefault())
+})
+
 // ── Start ────────────────────────────────────────────────────────────────
 
 async function init() {
   state = await api.state()
+  if (!state.defaultBrowser.supported) document.querySelector('section[data-step="default"]').remove()
+  steps = [...document.querySelectorAll('section')]
+  steps.forEach(() => dots.append(document.createElement('i')))
+  if (state.defaultBrowser.supported) renderDefault(state.defaultBrowser.isDefault)
   $('#logo').src = state.icon
   paint()
   renderBrowsers()

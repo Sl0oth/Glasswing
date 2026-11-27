@@ -407,6 +407,10 @@ function runAction(shell, action) {
     'new-private-window': () => shell.constructor.create({ private: true }),
     'picture-in-picture': () => tab?.togglePictureInPicture(),
     screenshot: () => shell.saveScreenshot(),
+    'make-default-browser': () => {
+      require('./default-browser').makeDefault()
+      setTimeout(() => shell.constructor.all.forEach((each) => each.scheduleState()), 1500)
+    },
     'toggle-auto-groups': () => require('./auto-groups').setEnabled(!require('./auto-groups').enabled()),
     'toggle-sleep-tabs': () => require('./sleeping-tabs').setEnabled(!require('./sleeping-tabs').enabled()),
     'toggle-split-links': () => {

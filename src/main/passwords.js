@@ -1,6 +1,7 @@
 // A small built-in password manager: offers to save on login, fills on the next visit.
-// Passwords are encrypted with the OS keystore (DPAPI on Windows, Keychain on macOS).
-const { ipcMain, safeStorage } = require('electron')
+// Passwords are encrypted with the OS keystore (DPAPI on Windows, a key in the keychain on macOS: see secrets.js).
+const { ipcMain } = require('electron')
+const safeStorage = require('./secrets')
 const crypto = require('node:crypto')
 const prompts = require('./prompts')
 const store = require('./store')
@@ -77,7 +78,27 @@ async function offerToSave(event, origin, username, password) {
   }
 }
 
+/** Saves passwords encrypted the old way on a Mac again, the new way. macOS asks for the old key this one time. */
+function migrate() {
+  const list = entries()
+  let changed = false
+  for (const entry of list) {
+    const data = Buffer.from(entry.password ?? '', 'base64')
+    if (!data.length || !safeStorage.needsMigrating(data)) continue
+    const password = decrypt(entry.password)
+    if (password == null) continue // couldn't read it: left as it was
+    entry.password = encrypt(password)
+    changed = true
+  }
+  if (changed) store.set('passwords', list)
+}
+
 function setupPasswords() {
+  try {
+    if (safeStorage.isEncryptionAvailable()) migrate()
+  } catch (err) {
+    console.error('Could not move passwords to the new key:', err)
+  }
   ipcMain.handle('autofill:get', (event) => {
     // The origin comes from the browser, not the page, so sites only ever get their own logins.
     const origin = webOrigin(event.senderFrame)
